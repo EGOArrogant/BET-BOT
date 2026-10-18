@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0b10">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>BetBot MX · Sin conexión</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100dvh; background: radial-gradient(120% 60% at 50% 35%, #1d1b44 0%, #0b0b10 70%); color: #f5f5f7;
+      font: 16px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; display: grid; place-items: center;
+      padding: calc(env(safe-area-inset-top) + 24px) 20px calc(env(safe-area-inset-bottom) + 24px); -webkit-user-select: none; user-select: none; }
+    main { width: 100%; max-width: 420px; text-align: center; }
+    .icon { width: 96px; height: 96px; border-radius: 22px; box-shadow: 0 12px 40px rgba(94, 92, 230, .45); }
+    h1 { font-size: 26px; margin: 20px 0 6px; letter-spacing: -.02em; }
+    p { color: rgba(235, 235, 245, .7); margin: 0 0 18px; }
+    .card { background: rgba(255, 255, 255, .07); border: 1px solid rgba(255, 255, 255, .1); border-radius: 22px; padding: 16px 18px; text-align: left;
+      backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); margin-top: 14px; }
+    ol { margin: 0; padding-left: 20px; } li { margin: 6px 0; } b { color: #fff; }
+    .snap { display: flex; gap: 10px; }
+    .snap div { flex: 1; } .snap small { display: block; color: rgba(235, 235, 245, .55); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .snap strong { font-size: 20px; }
+    button { margin-top: 20px; width: 100%; padding: 15px; border: 0; border-radius: 16px; background: #0a84ff; color: #fff; font: 600 17px/1 inherit; font-family: inherit; }
+    button:active { transform: scale(.98); }
+    .status { margin-top: 12px; font-size: 13px; color: rgba(235, 235, 245, .55); display: flex; gap: 8px; align-items: center; justify-content: center; }
+    .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, .25); border-top-color: #0a84ff; animation: s .8s linear infinite; }
+    @keyframes s { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <main>
+    <img class="icon" src="/icons/icon-180.png" alt="">
+    <h1>Tu PC no está disponible</h1>
+    <p>BetBot MX corre en tu computadora. En cuanto vuelva, la app se abre sola.</p>
+    <div class="card" id="snap" hidden></div>
+    <div class="card">
+      <ol>
+        <li>Revisa que la PC esté <b>encendida</b> y sin suspender.</li>
+        <li>Abre <b>iniciar.bat</b> (la ventana negra del bot).</li>
+        <li>En el iPhone, deja <b>Tailscale</b> conectado (o usa el WiFi de tu casa).</li>
+      </ol>
+    </div>
+    <button id="retry">Reintentar ahora</button>
+    <div class="status"><span class="spin"></span><span id="st">Buscando tu PC…</span></div>
+  </main>
+  <script>
+    // Último resumen guardado por la app (banca y apuestas en juego) para no quedarte en blanco.
+    try {
+      var s = JSON.parse(localStorage.getItem('bb-snap') || 'null');
+      if (s && s.t) {
+        var el = document.getElementById('snap');
+        var money = function (x) { return '$' + Number(x || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+        el.innerHTML = '<div class="snap"><div><small>Banca</small><strong>' + money(s.bank) + '</strong></div><div><small>En juego</small><strong>' +
+          (s.pending || 0) + '</strong></div></div><p style="margin:10px 0 0;font-size:13px">Último dato: ' +
+          new Date(s.t).toLocaleString('es-MX', { weekday: 'short', hour: '2-digit', minute: '2-digit' }) + '</p>';
+        el.hidden = false;
+      }
+    } catch (e) {}
+    var tries = 0;
+    function check() {
+      tries++;
+      document.getElementById('st').textContent = tries > 1 ? 'Buscando tu PC… (intento ' + tries + ')' : 'Buscando tu PC…';
+      fetch('/api/config', { cache: 'no-store' }).then(function (r) {
+        if (!r.ok && r.status !== 401) return;
+        // La PC responde: abrir la app. Si ya se intentó y volvimos aquí, el service worker es el que falla:
+        // se quita (la app lo vuelve a instalar al cargar) para no quedar en un ciclo.
+        var n = 0; try { n = Number(sessionStorage.getItem('bb-off-retry') || 0); sessionStorage.setItem('bb-off-retry', String(n + 1)); } catch (e) {}
+        var go = function () { location.reload(); };
+        if (n >= 1 && navigator.serviceWorker) {
+          try { sessionStorage.removeItem('bb-off-retry'); } catch (e) {}
+          navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (x) { return x.unregister(); })); }).then(go, go);
+        } else go();
+      }).catch(function () {});
+    }
+    document.getElementById('retry').addEventListener('click', check);
+    setInterval(check, 5000);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) check(); });
+  </script>
+</body>
+</html>

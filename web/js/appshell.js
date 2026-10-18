@@ -18,7 +18,116 @@ export function initShell(o) {
   connectionMonitor();
   resumeRefresh();
   hapticTabs();
+  registerSW();
   if (isIOS && !isStandalone && !opts.isLocal) installHint();
+}
+
+// ---------- Dirección segura (Tailscale) ----------
+export const isTailscale = /\.ts\.net$/i.test(location.hostname);
+
+// ---------- Service worker: avisos push y pantalla sin conexión ----------
+// Solo funciona con dirección segura (https de Tailscale, o localhost en la PC).
+function registerSW() {
+  try { sessionStorage.removeItem('bb-off-retry'); } catch {} // la app cargó bien: reinicia el contador de offline.html
+  // Solo en otros dispositivos (iPhone por Tailscale): ahí da avisos y la pantalla "Tu PC no está disponible".
+  // En la propia PC no aporta nada (si la PC está apagada no hay nada que abrir); y si quedó uno de antes, se quita.
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+  if (opts.isLocal) { navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => r.unregister())).catch(() => {}); return; }
+  navigator.serviceWorker.register('/sw.js').catch((e) => console.warn('service worker', e));
+  // Al tocar un aviso con la app abierta: ir a la sección del aviso.
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type === 'open') { const u = new URL(e.data.url); if (u.hash) location.hash = u.hash; }
+  });
+  clearBadge();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) clearBadge(); });
+}
+function clearBadge() {
+  try { navigator.clearAppBadge?.(); } catch {}
+  navigator.serviceWorker?.ready.then((r) => r.getNotifications()).then((ns) => ns.forEach((n) => n.close())).catch(() => {});
+}
+
+// Resumen para la pantalla "Tu PC no está disponible" (se ve aunque la PC esté apagada).
+export function saveSnapshot(s) { try { localStorage.setItem('bb-snap', JSON.stringify({ ...s, t: Date.now() })); } catch {} }
+
+// ---------- Notificaciones push ----------
+// 'pc': se activan desde el iPhone · 'insecure': falta la dirección https de Tailscale · 'install': en iPhone hay que instalar la app primero.
+export function pushSupport() {
+  if (opts.isLocal) return { ok: false, why: 'pc' };
+  if (!window.isSecureContext || !('serviceWorker' in navigator)) return { ok: false, why: 'insecure' };
+  if (isIOS && !isStandalone) return { ok: false, why: 'install' };
+  if (!('PushManager' in window) || typeof Notification === 'undefined') return { ok: false, why: 'unsupported' };
+  return { ok: true };
+}
+const b64uToBytes = (s) => { const b = atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)); return Uint8Array.from(b, (c) => c.charCodeAt(0)); };
+async function post(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+  return j;
+}
+async function currentSub() {
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+const markPush = (on) => { try { on ? localStorage.setItem('bb-push', '1') : localStorage.removeItem('bb-push'); } catch {} };
+export const pushOnHere = () => { try { return localStorage.getItem('bb-push') === '1'; } catch { return false; } };
+
+export async function pushState() {
+  const sup = pushSupport();
+  if (!sup.ok) return { ...sup, subscribed: false };
+  const permission = Notification.permission;
+  const sub = await currentSub();
+  if (!sub) { markPush(false); return { ok: true, permission, subscribed: false }; }
+  const st = await post('/api/push/status', { endpoint: sub.endpoint });
+  // El iPhone tiene permiso pero la PC lo olvidó (p. ej. se borró data\push.json): se vuelve a registrar solo.
+  if (!st.subscribed && permission === 'granted') {
+    await post('/api/push/subscribe', { subscription: sub.toJSON(), device: deviceName() });
+    return { ok: true, permission, ...(await post('/api/push/status', { endpoint: sub.endpoint })) };
+  }
+  markPush(st.subscribed);
+  return { ok: true, permission, ...st };
+}
+
+// Debe llamarse directamente desde un toque (iOS solo pide permiso así).
+export async function enablePush(prefs) {
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error(perm === 'denied'
+    ? 'Bloqueaste los avisos. Actívalos en Ajustes del iPhone → Notificaciones → BetBot.'
+    : 'No diste permiso para los avisos.');
+  const { publicKey } = await (await fetch('/api/push/key', { cache: 'no-store' })).json();
+  const key = b64uToBytes(publicKey);
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  // Si la llave del servidor cambió, la suscripción vieja ya no sirve.
+  if (sub) {
+    const old = sub.options?.applicationServerKey ? new Uint8Array(sub.options.applicationServerKey) : null;
+    if (!old || old.length !== key.length || old.some((b, i) => b !== key[i])) { await sub.unsubscribe(); sub = null; }
+  }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  const r = await post('/api/push/subscribe', { subscription: sub.toJSON(), prefs, device: deviceName() });
+  markPush(true);
+  return r;
+}
+export async function disablePush() {
+  const sub = await currentSub();
+  if (sub) { await post('/api/push/unsubscribe', { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe(); }
+  markPush(false);
+}
+export async function testPush() {
+  const sub = await currentSub();
+  if (!sub) throw new Error('Activa primero los avisos en este dispositivo.');
+  return post('/api/push/test', { endpoint: sub.endpoint });
+}
+export async function setPushPrefs(prefs) {
+  const sub = await currentSub();
+  if (!sub) throw new Error('Activa primero los avisos en este dispositivo.');
+  return post('/api/push/prefs', { endpoint: sub.endpoint, prefs });
+}
+function deviceName() {
+  if (/iPhone/.test(navigator.userAgent)) return 'iPhone';
+  if (isIOS) return 'iPad';
+  if (/Android/.test(navigator.userAgent)) return 'Android';
+  return 'PC';
 }
 
 // ---------- Vibración ligera ----------

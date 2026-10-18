@@ -578,3 +578,11 @@ html.is-offline #view { filter: grayscale(.6); opacity: .7; transition: filter .
   display: flex; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 22px; animation: drop .4s cubic-bezier(.2,1.3,.4,1); }
 .install-ic { width: 46px; height: 46px; border-radius: 11px; flex: none; }
 .share-ic svg { width: 16px; height: 16px; vertical-align: -3px; color: var(--blue, #0a84ff); }
+
+/* ---------- Guía de Tailscale (Más → Celular) ---------- */
+.ts-steps { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.ts-step { display: flex; gap: 12px; align-items: flex-start; }
+.ts-n { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 14px;
+  background: var(--fill-2); color: var(--text); }
+.ts-step.done .ts-n { background: var(--green-fill); color: #fff; }
+.ts-step.done > .grow { opacity: .7; }

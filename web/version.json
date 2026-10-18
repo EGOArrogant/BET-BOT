@@ -1,8 +1,15 @@
 {
-  "version": "1.8.0",
+  "version": "1.9.0",
   "date": "2026-10-18",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Notificaciones en la pantalla de bloqueo del iPhone, aunque la app esté cerrada: oportunidades de oro, apuestas nuevas, ganadas/perdidas/cobros y entradas de los top apostadores",
+    "Eliges qué avisos recibir y puedes enviar un aviso de prueba (Más → Celular en el iPhone)",
+    "Acceso fuera de casa con datos móviles mediante Tailscale (gratis), con dirección segura https y sin abrir tu PC a internet",
+    "Guía paso a paso de Tailscale en Más → Celular, con detección automática y botón para activar la dirección segura",
+    "Pantalla propia \"Tu PC no está disponible\" con tu último resumen de banca, y reconexión automática",
+    "Número de avisos en el icono de la app",
+    "Las visitas por Tailscale piden tu código de acceso y no pueden cambiar claves ni ajustes de la PC",
     "App para iPhone: instálala desde Safari con Compartir → Agregar a pantalla de inicio; se abre en pantalla completa con su propio icono",
     "Pantalla de inicio propia para cada iPhone (incluido el 17 Pro Max) e icono nuevo",
     "La app instalada guarda tu acceso: no vuelve a pedir el QR",

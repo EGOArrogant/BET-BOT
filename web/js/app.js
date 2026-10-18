@@ -7,7 +7,7 @@ import * as K from './books.js';
 import { updateElo, esportsTable } from './esports.js';
 import { getPredictionMarkets, matchPrediction, nameScore } from './prediction.js';
 import * as SM from './smart.js';
-import { initShell } from './appshell.js';
+import { initShell, saveSnapshot, pushSupport, pushState, enablePush, disablePush, testPush, setPushPrefs, pushOnHere, isTailscale } from './appshell.js';
 
 // ---------- utilidades ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -112,6 +112,7 @@ async function refreshAll() {
   collectNotifications();
   S.lastUpdate = Date.now();
   S.scanning = false;
+  saveSnapshot({ bank: B.getState().bankroll, pending: B.pendingBets().length });
   B.save();
   render();
 }
@@ -390,7 +391,7 @@ function labelTables(root) {
 function serverBanner() {
   if (!S.cfg.local || !S.version) return '';
   const sv = S.cfg.serverVersion;
-  if (sv && cmpVer(sv, '1.8.0') >= 0) return '';
+  if (sv && cmpVer(sv, '1.9.0') >= 0) return '';
   return `<div class="warn" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="grow"><b>El servidor sigue con la versión anterior.</b> Algunas funciones (como Top Polymarket) no van a funcionar hasta reiniciarlo.</div><button class="btn small primary" data-restartserver>↻ Reiniciar servidor</button></div>`;
 }
 
@@ -1703,11 +1704,22 @@ function collectNotifications() {
     if (!NOTIF_KINDS.has(l.kind)) continue;
     items.push({ id: 'l' + l.t, t: l.t, icon: NOTIF_ICON[l.kind] || '🤖', title: l.msg, src: 'Bot', cat: 'bot' });
   }
+  // Oportunidades de oro nuevas: quedan en la bitácora y la PC las envía como aviso push al iPhone.
+  // (goldSeen se comparte entre dispositivos para no avisar dos veces; la primera vez solo se marcan las actuales.)
+  const stN = B.getState(), firstGold = !stN.goldSeen;
+  stN.goldSeen ||= {};
+  let goldChanged = false;
   for (const a of allAnalyses()) for (const g of a.golden) {
     const id = 'g' + key(a.ev) + g.type;
     if (!S.goldFirstSeen.has(id)) S.goldFirstSeen.set(id, Date.now());
+    if (!stN.goldSeen[id]) {
+      stN.goldSeen[id] = Date.now(); goldChanged = true;
+      if (!firstGold && a.ev.state !== 'post') B.log(`★ ${g.title}${g.why ? ' — ' + g.why : ''}`, 'gold');
+    }
     items.push({ id, t: S.goldFirstSeen.get(id), icon: '★', title: g.title, body: g.why, open: key(a.ev), src: 'Oportunidad de Oro', cat: 'gold' });
   }
+  for (const [id, t0] of Object.entries(stN.goldSeen)) if (Date.now() - t0 > 3 * 86400000) { delete stN.goldSeen[id]; goldChanged = true; }
+  if (goldChanged) B.save();
   items.push(...S.newsNotifs);
   // Rastro de los top apostadores de Polymarket que sigues.
   for (const x of B.getState().smart.trail.slice(0, 30)) {
@@ -1716,7 +1728,7 @@ function collectNotifications() {
   }
   S.notifs = items.sort((x, y) => y.t - x.t).slice(0, 80);
   // Aviso del navegador para lo nuevo (solo si diste permiso).
-  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && !pushOnHere()) {
     for (const n of S.notifs.filter((x) => x.t > notifPushed && x.src !== 'Bot').slice(0, 3)) { try { new Notification('BetBot MX · ' + n.src, { body: n.title }); } catch {} }
   }
   notifPushed = Date.now();
@@ -1780,13 +1792,142 @@ function viewPhone() {
   return `<div id="phone-box"><div class="widget glass"><div class="shimmer"></div><div class="shimmer"></div></div></div>`;
 }
 async function loadPhone() {
+  await loadPhoneLan();
+  loadTailscale();
+  loadPushBox();
+}
+
+// ---------- Tailscale: dirección segura para el iPhone (en casa y con datos móviles) ----------
+async function loadTailscale() {
+  const el = $('#ts-box');
+  if (!el) return;
+  if (!el.innerHTML) el.innerHTML = '<div class="widget glass mt"><div class="shimmer"></div><div class="shimmer"></div></div>';
+  let t;
+  try { t = await (await fetch('/api/tailscale', { cache: 'no-store' })).json(); } catch { el.innerHTML = ''; return; }
+  const running = t.state === 'Running', ready = t.installed && running && t.https && t.serving && t.lan;
+  const step = (n, done, html) => `<li class="ts-step ${done ? 'done' : ''}"><span class="ts-n">${done ? '✓' : n}</span><div class="grow">${html}</div></li>`;
+  const steps = [
+    step(1, t.installed, `<b>Instala Tailscale en esta PC</b> y crea tu cuenta gratis (puedes entrar con Google, Microsoft o Apple).
+      ${t.installed ? '' : '<div class="mt"><a class="btn small primary" href="https://tailscale.com/download/windows" target="_blank" rel="noopener">Descargar Tailscale para Windows ↗</a></div>'}`),
+    step(2, t.installed && running, `<b>Inicia sesión en Tailscale</b>: icono de Tailscale junto al reloj de Windows → <b>Log in</b>.
+      ${t.installed && !running ? `<div class="note">Estado actual: ${esc(t.state || 'desconectado')}</div>` : ''}`),
+    step(3, t.installed && t.https, `<b>Activa HTTPS en tu cuenta</b>: entra a <a href="https://login.tailscale.com/admin/dns" target="_blank" rel="noopener">login.tailscale.com/admin/dns ↗</a>,
+      deja <b>MagicDNS</b> encendido y presiona <b>Enable HTTPS</b>.`),
+    step(4, t.installed && t.serving && t.lan, `<b>Conecta el bot a Tailscale</b>. ${!t.lan
+      ? 'Primero activa el acceso del celular con el botón de arriba.'
+      : t.serving ? 'Listo: el bot ya responde en tu dirección segura.'
+      : `<div class="mt"><button class="btn small primary" data-tsserve ${t.installed && running ? '' : 'disabled'}>🔒 Activar dirección segura</button></div>`}`),
+    step(5, false, `<b>En tu iPhone</b>: instala <b>Tailscale</b> desde la App Store, entra con la <b>misma cuenta</b> y deja la conexión activada.`),
+  ].join('');
+  let qrHtml = '';
+  if (ready && t.url) {
+    const url = `${t.url}/?t=${t.token}&app=1`;
+    try {
+      const qr = await loadQrLib();
+      const q = qr(0, 'M'); q.addData(url); q.make();
+      qrHtml = `<div class="qr-card mt"><div class="qr">${q.createSvgTag({ cellSize: 6, margin: 2, scalable: true })}</div>
+        <div class="grow"><h3>Instala la app segura en tu iPhone</h3><ol class="steps">
+        <li>Con Tailscale activado en el iPhone, escanea este código con la cámara.</li>
+        <li>Se abre en <b>Safari</b>: <b>Compartir</b> → <b>Agregar a pantalla de inicio</b>.</li>
+        <li>Abre BetBot desde el icono → <b>Más → Celular</b> → <b>Activar notificaciones</b>.</li>
+        <li>Si tenías la app anterior (la de la red WiFi), bórrala para no tener dos.</li></ol>
+        <div class="note">Dirección: <span class="kbd">${esc(t.url)}</span></div><div class="warn mt">El código lleva tu clave de acceso: no lo compartas.</div></div></div>`;
+    } catch {}
+  }
+  el.innerHTML = `<div class="widget glass mt ts-card">
+    <h3>🌎 Fuera de casa y avisos en la pantalla de bloqueo</h3>
+    <p class="note">Con <b>Tailscale</b> (gratis) tu iPhone se conecta a tu PC de forma privada y cifrada, en casa o con datos móviles, sin abrir tu PC a internet.
+    Además da la dirección segura (https) que el iPhone exige para las notificaciones y para mostrar una pantalla propia si la PC está apagada.</p>
+    ${ready ? '<div class="ok">✓ Todo listo: tu bot tiene dirección segura.</div>' : ''}
+    <ol class="ts-steps">${steps}</ol>${qrHtml}
+    <div class="flex mt"><button class="btn small" data-tsrefresh>↻ Revisar de nuevo</button>${t.serving ? '<button class="btn small" data-tsreset>Quitar dirección segura</button>' : ''}</div>
+    <div class="note mt" id="ts-msg"></div></div>`;
+  el.onclick = async (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const msg = $('#ts-msg');
+    if (b.dataset.tsrefresh !== undefined) { b.textContent = 'Revisando…'; return loadTailscale(); }
+    if (b.dataset.tsreset !== undefined) { await fetch('/api/tailscale/reset', { method: 'POST' }).catch(() => {}); return loadTailscale(); }
+    if (b.dataset.tsserve !== undefined) {
+      b.disabled = true; b.textContent = 'Activando…';
+      try {
+        const r = await (await fetch('/api/tailscale/serve', { method: 'POST' })).json();
+        if (r.enableUrl) {
+          msg.innerHTML = `Tailscale pide permitir esta función en tu cuenta (una sola vez): <a href="${esc(r.enableUrl)}" target="_blank" rel="noopener">abre este enlace ↗</a>, acepta y vuelve a presionar <b>Activar dirección segura</b>.`;
+          b.disabled = false; b.textContent = '🔒 Activar dirección segura';
+          return;
+        }
+        if (!r.ok) { msg.innerHTML = `<span class="down">No se pudo activar.</span> ${esc(r.output || r.error || '')}`; b.disabled = false; b.textContent = '🔒 Activar dirección segura'; return; }
+        loadTailscale();
+      } catch (err) { msg.textContent = err.message; b.disabled = false; }
+    }
+  };
+}
+
+// ---------- Notificaciones push (pantalla de bloqueo) ----------
+const PUSH_CATS = [['gold', '★ Oportunidades de oro'], ['newbets', '🎫 Apuestas nuevas del bot'], ['bets', '✅ Ganadas, perdidas y cobros'], ['smart', '🐋 Entradas de los top apostadores']];
+async function loadPushBox() {
+  const el = $('#push-box');
+  if (!el) return;
+  const head = '<h3>🔔 Notificaciones en la pantalla de bloqueo</h3>';
+  const sup = pushSupport();
+  if (!sup.ok) {
+    const why = {
+      pc: 'Los avisos llegan a tu <b>iPhone</b>: completa los pasos de arriba, instala la app segura y actívalos desde <b>Más → Celular</b> en el iPhone. La PC es la que los envía.',
+      insecure: S.cfg.local
+        ? 'Los avisos del iPhone necesitan la dirección segura de Tailscale (pasos de arriba). Después actívalos desde la app del iPhone.'
+        : 'Para recibir avisos con la app cerrada, instala la app desde la dirección segura de Tailscale (en la PC: Más → Celular).',
+      install: 'Primero instala la app: <b>Compartir</b> → <b>Agregar a pantalla de inicio</b>, y ábrela desde su icono.',
+      unsupported: 'Este navegador no admite notificaciones push. En iPhone necesitas iOS 16.4 o más reciente.',
+    }[sup.why];
+    el.innerHTML = `<div class="widget glass mt">${head}<p class="note">${why}</p></div>`;
+    return;
+  }
+  let st;
+  try { st = await pushState(); } catch (e) { el.innerHTML = `<div class="widget glass mt">${head}<div class="warn">${esc(e.message)}</div></div>`; return; }
+  const prefs = st.prefs || { gold: true, newbets: true, bets: true, smart: true };
+  const toggles = PUSH_CATS.map(([k, l]) => `<div class="row"><div class="grow">${l}</div><label class="switch"><input type="checkbox" data-pushpref="${k}" ${prefs[k] ? 'checked' : ''}><span></span></label></div>`).join('');
+  el.innerHTML = `<div class="widget glass mt">${head}
+    ${st.subscribed ? '<div class="ok">✓ Avisos activos en este dispositivo: llegan aunque la app esté cerrada.</div>' : '<p class="note">Recibe lo importante del bot en la pantalla de bloqueo, aunque la app esté cerrada.</p>'}
+    <div class="list mt">${toggles}</div>
+    <div class="flex mt">${st.subscribed
+      ? '<button class="btn small" data-pushtest>Enviar aviso de prueba</button><button class="btn small danger" data-pushoff>Desactivar</button>'
+      : '<button class="btn primary" data-pushon>🔔 Activar notificaciones</button>'}</div>
+    <div class="note mt" id="push-msg">${st.permission === 'denied' ? '⚠️ Los avisos están bloqueados: actívalos en Ajustes del iPhone → Notificaciones → BetBot.' : ''}</div>
+    <div class="note mt">Los envía tu PC cuando el bot detecta algo nuevo: necesitan la PC encendida con <span class="kbd">iniciar.bat</span> y BetBot abierto en el navegador de la PC (ahí corre el análisis).</div></div>`;
+  const msg = () => $('#push-msg');
+  const chosen = () => Object.fromEntries([...el.querySelectorAll('[data-pushpref]')].map((i) => [i.dataset.pushpref, i.checked]));
+  el.onclick = async (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.pushon !== undefined) {
+      // Sin esperas antes de pedir permiso: iOS solo lo muestra si viene directo del toque.
+      b.disabled = true; b.textContent = 'Activando…';
+      try { await enablePush(chosen()); toast('🔔 Notificaciones activadas'); await loadPushBox(); }
+      catch (err) { msg().textContent = err.message; b.disabled = false; b.textContent = '🔔 Activar notificaciones'; }
+    } else if (b.dataset.pushtest !== undefined) {
+      b.disabled = true;
+      try { const r = await testPush(); msg().textContent = r.ok ? '✓ Aviso enviado: debería llegar en unos segundos.' : `No se pudo enviar (código ${(r.codes || []).join(', ')}).`; }
+      catch (err) { msg().textContent = err.message; }
+      b.disabled = false;
+    } else if (b.dataset.pushoff !== undefined) {
+      try { await disablePush(); toast('Notificaciones desactivadas'); } catch (err) { msg().textContent = err.message; }
+      loadPushBox();
+    }
+  };
+  el.onchange = async (e) => {
+    if (!e.target.dataset.pushpref || !st.subscribed) return;
+    try { await setPushPrefs(chosen()); } catch (err) { msg().textContent = err.message; }
+  };
+}
+
+async function loadPhoneLan() {
   const box = $('#phone-box');
   if (!box) return;
-  if (!S.cfg.local) { box.innerHTML = '<div class="widget glass ok">✓ Ya estás usando BetBot MX desde otro dispositivo. Para generar el QR, ábrelo en la computadora.</div>'; return; }
+  if (!S.cfg.local) { box.innerHTML = `<div class="widget glass ok">✓ Estás usando BetBot MX desde ${isTailscale ? 'la <b>dirección segura</b> (Tailscale): funciona en casa y con datos móviles' : 'tu red WiFi'}.</div><div id="push-box"></div>`; return; }
   let net;
   try { net = await (await fetch('/api/network')).json(); } catch { box.innerHTML = '<div class="warn">No se pudo leer la red.</div>'; return; }
-  const away = `<div class="widget glass mt"><h3>¿Fuera de casa?</h3><p class="note">El QR funciona en tu misma red WiFi. Para usar el bot con datos móviles, instala <b>Tailscale</b> (gratis) en la PC y en el celular con la misma cuenta. Luego entra desde el celular a <span class="kbd">http://IP-de-Tailscale-de-tu-PC:${net.port}/?t=…</span> (el mismo enlace del QR, cambiando la IP). Así no expones tu PC a internet.</p>
-    <p class="note">El bot sigue analizando mientras la PC esté encendida con <span class="kbd">iniciar.bat</span> abierto. El piloto automático corre en el dispositivo donde lo activaste.</p></div>`;
+  const away = '<div id="ts-box"></div><div id="push-box"></div>';
   // Red marcada como "Pública": Windows bloquea al celular aunque el QR sea correcto (pantalla negra en el teléfono).
   const pub = (net.profiles || []).filter((p) => /public/i.test(p.category));
   const publicWarn = pub.length ? `<div class="widget glass" style="border:2px solid var(--orange-fill);margin-bottom:14px"><h3>⚠️ Tu red está como "Pública": Windows bloquea al celular</h3>
@@ -2102,6 +2243,10 @@ async function liveTick() {
     if (w.esports >= 0.5) w.esports = 0.35;
     B.updateSettings({ w13: true });
   }
+  // Al tocar una notificación push: abre su sección (#gold, #bank, #smart).
+  const fromHash = () => { const h = location.hash.slice(1); if (NAV.some(([k]) => k === h)) { go(h); history.replaceState(null, '', location.pathname + location.search); } };
+  window.addEventListener('hashchange', fromHash);
+  fromHash();
   await refreshAll();
   schedule();
   setInterval(liveTick, 5_000);
