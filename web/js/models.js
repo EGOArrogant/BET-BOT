@@ -203,8 +203,23 @@ function esportsModel(ev, table) {
   return { kind: 'esports', pre, live, pMap, elo1: e1, elo2: e2, known };
 }
 
+// ---------- UFC / Boxeo: récord del peleador (con regresión fuerte) ----------
+// El récord dice poco sin el nivel de los rivales, así que el modelo pesa poco y el precio del mercado manda.
+function fightModel(ev) {
+  const h = ev.home, a = ev.away;
+  const has = (x) => x.recW != null && x.recL != null && x.recW + x.recL >= 5;
+  const wp = (x) => (x.recW + 4) / (x.recW + x.recL + 8);
+  let p = 0.5;
+  if (has(h) && has(a)) { const x = wp(h), y = wp(a); p = (x - x * y) / (x + y - 2 * x * y); }
+  p = clamp(p, 0.15, 0.85);
+  // known: false → el récord se muestra como referencia, pero la probabilidad es la del mercado (Polymarket/Kalshi/casas).
+  // Un récord como 10-0 contra rivales débiles no se compara con 31-12 contra la élite: usarlo crearía "valor" falso.
+  return { kind: 'fight', pre: { home: p, away: 1 - p }, live: null, known: false, recordP: has(h) && has(a) ? p : null };
+}
+
 // ---------- API pública ----------
 export function modelEvent(ev, table, liveWinProb) {
+  if (ev.sport === 'mma' || ev.sport === 'boxing') return fightModel(ev);
   if (ev.sport === 'soccer') return soccerModel(ev, table);
   if (ev.sport === 'tennis') return tennisModel(ev, table);
   if (ev.sport === 'esports') return esportsModel(ev, table);

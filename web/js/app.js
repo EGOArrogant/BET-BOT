@@ -44,7 +44,7 @@ function parseOddsInput(v) {
 
 // ---------- estado de la app ----------
 const S = {
-  cfg: {}, tab: 'home', secLeague: { soccer: 'all', sports: 'all', esports: 'all' }, matchFilter: 'upcoming',
+  cfg: {}, tab: 'home', secLeague: { soccer: 'all', sports: 'all', combat: 'all', esports: 'all' }, matchFilter: 'upcoming',
   events: new Map(), tables: new Map(), analysis: new Map(), summaries: new Map(), ai: new Map(), oddsApi: new Map(),
   lastUpdate: null, scanning: false, open: null, sheetTab: 'analysis',
   moreTab: 'tables', tablesLeague: 'uefa.champions', newsLeague: 'mex.1', bankTab: 'pending', betSource: 'all', newsQuery: '',
@@ -280,6 +280,7 @@ const TITLES = {
   soccer: ['Fútbol', D.SECTIONS.soccer.sub],
   sports: ['Deportes', D.SECTIONS.sports.sub],
   esports: ['eSports', D.SECTIONS.esports.sub],
+  combat: ['Combate', D.SECTIONS.combat.sub],
   bet: ['Apostar', 'Tu boleto, dónde colocar cada apuesta y recomendaciones'],
   gold: ['Oportunidades de Oro', 'Underdogs con valor y remontadas en vivo'],
   bank: ['Mi Banca', 'Apuestas simuladas, rendimiento y aprendizaje'],
@@ -292,6 +293,7 @@ const ICONS = {
   soccer: '<circle cx="12" cy="12" r="9"/><path d="M12 7l4 3-1.5 4.5h-5L8 10z"/><path d="M12 3v4M21 10h-5M17.5 19l-3-4.5M6.5 19l3-4.5M3 10h5"/>',
   sports: '<path d="M8 21h8M12 17v4"/><path d="M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/>',
   esports: '<path d="M6 9h12a4 4 0 0 1 4 4v1a3 3 0 0 1-5.2 2L15 14H9l-1.8 2A3 3 0 0 1 2 14v-1a4 4 0 0 1 4-4z"/><path d="M7 11.5v3M5.5 13h3"/>',
+  combat: '<path d="M7 11V7a3 3 0 0 1 3-3h4a4 4 0 0 1 4 4v5a5 5 0 0 1-5 5h-2a4 4 0 0 1-4-4z"/><path d="M7 11H5.5a1.5 1.5 0 0 0 0 3H7M9 18v2h7v-2M11 8h5"/>',
   bet: '<path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/><path d="M14 5v12" stroke-dasharray="2 2"/>',
   gold: '<path d="M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4 6.1 20.5l1.2-6.5L2.5 9.4l6.6-.9z"/>',
   bank: '<path d="M3 17l5-5 4 4 8-9"/><path d="M15 7h5v5"/>',
@@ -299,7 +301,7 @@ const ICONS = {
   more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
 };
 const icon = (id) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[id]}</svg>`;
-const NAV = [['home', 'Inicio'], ['soccer', 'Fútbol'], ['sports', 'Deportes'], ['esports', 'eSports'], ['bet', 'Apostar'], ['gold', 'Oro'], ['bank', 'Banca'], ['news', 'Noticias'], ['more', 'Más']];
+const NAV = [['home', 'Inicio'], ['soccer', 'Fútbol'], ['sports', 'Deportes'], ['combat', 'Combate'], ['esports', 'eSports'], ['bet', 'Apostar'], ['gold', 'Oro'], ['bank', 'Banca'], ['news', 'Noticias'], ['more', 'Más']];
 const MOBILE_NAV = ['home', 'soccer', 'bet', 'bank', 'more'];
 
 function go(tab, moreTab) {
@@ -323,7 +325,7 @@ function renderChrome() {
     return `<button class="${S.secLeague[sec] === l.id ? 'active' : ''}" data-secleague="${sec}|${l.id}">${logo ? `<img class="lg-mini" src="${esc(logo)}" alt="" loading="lazy" onerror="this.remove()">` : ''}${esc(l.name)}${live ? `<span class="dot live"></span>` : ''}</button>`;
   }).join('')}</div>` : '');
   $('#sidebar').innerHTML = `<div class="brand"><span class="brand-icon">⚽</span><div><b>BetBot MX</b><div class="note">v${esc(S.version?.version || '—')}</div></div></div>
-    <nav>${NAV.map(([id, label]) => `<button class="side-item ${S.tab === id ? 'active' : ''}" data-tab="${id}">${icon(id)}<span>${label}</span>${badge(id)}</button>${['soccer', 'sports', 'esports'].includes(id) ? sub(id) : ''}`).join('')}</nav>
+    <nav>${NAV.map(([id, label]) => `<button class="side-item ${S.tab === id ? 'active' : ''}" data-tab="${id}">${icon(id)}<span>${label}</span>${badge(id)}</button>${['soccer', 'sports', 'combat', 'esports'].includes(id) ? sub(id) : ''}`).join('')}</nav>
     <div class="side-foot"><div class="note">Banca disponible</div><b>${money(st.bankroll)}</b><div class="note">${st.settings.autopilot ? (B.isAutopilotHere() ? '🟢 Bot activo aquí' : '🟢 Bot activo en otro dispositivo') : '⚪ Bot en pausa'}</div></div>`;
   $('#tabbar').innerHTML = MOBILE_NAV.map((id) => `<button data-tab="${id}" class="${S.tab === id || (id === 'more' && !MOBILE_NAV.includes(S.tab)) ? 'active' : ''}">${icon(id)}${NAV.find((n) => n[0] === id)[1]}${badge(id)}</button>`).join('');
   $('#page-title').textContent = TITLES[S.tab][0];
@@ -364,7 +366,7 @@ function render() {
   if (typingInView()) { S.pendingRender = true; return; }
   S.pendingRender = false;
   const v = $('#view');
-  const views = { home: viewHome, soccer: () => viewSection('soccer'), sports: () => viewSection('sports'), esports: () => viewSection('esports'), bet: viewBet, gold: viewGold, bank: viewBank, news: viewNews, more: viewMore };
+  const views = { home: viewHome, soccer: () => viewSection('soccer'), sports: () => viewSection('sports'), esports: () => viewSection('esports'), combat: () => viewSection('combat'), bet: viewBet, gold: viewGold, bank: viewBank, news: viewNews, more: viewMore };
   v.innerHTML = views[S.tab]();
   labelTables(v);
   if (S.tab === 'home' || S.tab === 'bank') drawEquity();
@@ -462,7 +464,7 @@ function teamLine(ev, side) {
   const t = ev[side];
   const showScore = ev.state !== 'pre';
   const sc = ev.sport === 'tennis' && showScore ? t.linescores.join(' ') : showScore ? t.score ?? '' : '';
-  return `<div class="team-line ${t.winner ? 'win' : ''}">${t.logo ? `<img src="${esc(t.logo)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<span class="nm">${esc(t.name)}${t.seed ? ` <span class="note">(${esc(t.seed)})</span>` : ''}</span><span class="sc">${esc(sc)}</span></div>`;
+  return `<div class="team-line ${t.winner ? 'win' : ''}">${t.logo ? `<img src="${esc(t.logo)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<span class="nm">${esc(t.name)}${t.seed ? ` <span class="note">(${esc(t.seed)})</span>` : ''}${(ev.sport === 'mma' || ev.sport === 'boxing') && (t.record || t.flag) ? ` <span class="note">${esc([t.record, t.flag].filter(Boolean).join(' · '))}</span>` : ''}</span><span class="sc">${esc(sc)}</span></div>`;
 }
 
 function tagsFor(a) {
@@ -480,7 +482,7 @@ function oddsButtons(a) {
   const ml = a.sels.filter((s) => s.market === '1X2' || s.market === 'Ganador');
   const labels = ev.sport === 'soccer' ? { home: '1', draw: 'X', away: '2' }
     : ev.sport === 'tennis' ? { home: 'J1', away: 'J2' }
-    : ev.sport === 'esports' ? { home: ev.home.abbr || 'Eq. 1', away: ev.away.abbr || 'Eq. 2' }
+    : ev.sport === 'esports' || ev.sport === 'mma' || ev.sport === 'boxing' ? { home: ev.home.abbr || 'Eq. 1', away: ev.away.abbr || 'Eq. 2' }
     : { home: 'Local', away: 'Visita' };
   // Sin momio de referencia se muestra el momio mínimo que necesitas en tu casa.
   return `<div class="odds">${ml.map((s) => `<button class="odd ${s.value && ev.state === 'pre' ? 'value' : ''}" data-slip="${key(ev)}|${s.pick}" title="Probabilidad estimada ${pct(s.p, 1)}">
@@ -514,7 +516,9 @@ function viewSection(sec) {
   const groups = leagues.map((l) => ({ l, items: list.filter((a) => a.ev.leagueId === l.id) })).filter((g) => g.items.length);
   const note = sec === 'esports'
     ? 'Sin momios gratis: se muestra el momio mínimo que necesitas en tu casa · % = probabilidad del bot (Elo propio)'
-    : 'Momios de referencia (DraftKings vía ESPN) · % = probabilidad estimada por el bot';
+    : sec === 'combat'
+      ? 'Precios de Polymarket y Kalshi (y The Odds API en boxeo) · % = probabilidad estimada · el récord de cada peleador aparece junto a su nombre'
+      : 'Momios de referencia (DraftKings vía ESPN) · % = probabilidad estimada por el bot';
   const head = (l, items) => {
     const live = items.filter((a) => a.ev.state === 'in').length;
     const logo = (l.id === 'lol' && items[0]?.ev.leagueLogo) || D.leagueLogo(l.id);
@@ -756,7 +760,7 @@ async function loadNews() {
 // ---------- Más: tablas, estrategia, ajustes ----------
 function viewMore() {
   // En el celular, accesos a las secciones que no caben en la barra inferior.
-  const shortcuts = `<div class="shortcuts mobile-only">${['sports', 'esports', 'gold', 'news'].map((id) => `<button class="shortcut glass" data-tab="${id}">${icon(id)}<span>${NAV.find((n) => n[0] === id)[1]}</span></button>`).join('')}</div>`;
+  const shortcuts = `<div class="shortcuts mobile-only">${['sports', 'combat', 'esports', 'gold', 'news'].map((id) => `<button class="shortcut glass" data-tab="${id}">${icon(id)}<span>${NAV.find((n) => n[0] === id)[1]}</span></button>`).join('')}</div>`;
   const seg = `<div class="segmented tabs-inline">${[['tables', 'Tablas'], ['books', 'Mis casas'], ['phone', 'Celular'], ['strategy', 'Estrategia'], ['settings', 'Ajustes']].map(([k, l]) => `<button data-more="${k}" class="${S.moreTab === k ? 'active' : ''}">${l}</button>`).join('')}</div>`;
   const head = shortcuts + seg;
   if (S.moreTab === 'strategy') return head + `<div class="widget glass">${STRATEGY_HTML}</div>`;
@@ -777,6 +781,11 @@ async function loadTables() {
       ${rows.slice(0, 100).map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.name)}</td><td class="num"><b>${Math.round(r.elo)}</b></td><td class="num">${r.maps}</td><td class="num">${r.series}</td></tr>`).join('')}</tbody></table></div>`
       : '<div class="empty">El bot todavía no observa resultados de este juego. El ranking se construye solo con cada serie terminada.</div>'}
       <div class="note mt">Cada equipo empieza en 1500. Ganar un mapa a un rival fuerte sube más el Elo. Entre más resultados observe el bot, más confiable es.</div></div>`;
+    return;
+  }
+  if (lg.sport === 'mma' || lg.sport === 'boxing') {
+    const box = $('#tables-box');
+    if (box) box.innerHTML = '<div class="widget glass empty">En combate no hay tabla de posiciones: el récord de cada peleador aparece junto a su nombre en la cartelera (sección Combate).</div>';
     return;
   }
   let groups = [];
@@ -875,7 +884,7 @@ function renderSheet() {
   const big = ev.state === 'pre' ? (ev.sport === 'esports' ? `Bo${ev.bestOf}` : 'vs') : ev.sport === 'tennis' ?`${(a.model.live?.sets || [0, 0]).join('-')}` : `${ev.home.score ?? 0} - ${ev.away.score ?? 0}`;
   const status = ev.state === 'in' ? `<span class="live-tag" style="color:var(--red)"><span class="dot live"></span> ${esc(ev.detail)}</span>` : ev.state === 'post' ? 'Final' : new Date(ev.date).toLocaleString('es-MX', { weekday: 'long', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   const team = (t) => `<div>${t.logo ? `<img src="${esc(t.logo)}" alt="" onerror="this.remove()">` : `<div style="font-size:40px">${D.SPORT_ICON[ev.sport]}</div>`}<div class="tname">${esc(t.name)}</div><div class="note">${esc(t.record || t.flag || '')}${t.form ? ' · ' + esc(t.form) : ''}</div></div>`;
-  const tabs = ev.sport === 'esports'
+  const tabs = ['esports', 'mma', 'boxing'].includes(ev.sport)
     ? [['analysis', 'Análisis'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']]
     : [['analysis', 'Análisis'], ['lineups', ev.sport === 'soccer' ? 'Alineaciones' : 'Plantilla'], ['stats', 'Estadísticas'], ['feed', 'Minuto a minuto'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']];
   $('#sheet-body').innerHTML = `<div class="scoreboard">${team(ev.home)}<div><div class="big">${esc(big)}</div><div class="st">${status}</div>${ev.sport === 'tennis' && ev.state !== 'pre' ? `<div class="note">${ev.home.linescores.join(' ')}<br>${ev.away.linescores.join(' ')}</div>` : ''}</div>${team(ev.away)}</div>
@@ -907,6 +916,7 @@ function tabAnalysis(a) {
     <div class="legend">${sides.map(([k, n, c]) => `<span><i style="background:${c}"></i>${esc(n)} <b>${pct(probs[k], 1)}</b></span>`).join('')}</div>`;
   const extra = m.kind === 'soccer' ? `<div class="note mt">Goles esperados: <b>${m.lh.toFixed(2)}</b> - <b>${m.la.toFixed(2)}</b> · Ambos anotan ${pct(probs.btts)} · Más de ${probs.line ?? m.line}: ${pct(probs.over)}${m.live ? ` · Minuto ${Math.round(m.live.minute)}` : ''}</div>`
     : m.kind === 'tennis' ? `<div class="note mt">Ranking: ${m.rank1 ? '#' + m.rank1 : 'sin ranking'} vs ${m.rank2 ? '#' + m.rank2 : 'sin ranking'} · al mejor de ${ev.bestOf} sets</div>`
+    : m.kind === 'fight' ? `<div class="note mt">${esc(ev.tournament || '')}${ev.round ? ' · ' + esc(ev.round) : ''}${ev.rounds ? ' · ' + ev.rounds + ' rounds' : ''}${ev.home.record ? ` · récord ${esc(ev.home.record)} vs ${esc(ev.away.record)}` : ''} · El récord sin el nivel de los rivales dice poco: aquí manda el precio de Polymarket/Kalshi.</div>`
     : m.kind === 'esports' ? `<div class="note mt">Elo del bot: ${Math.round(m.elo1)} vs ${Math.round(m.elo2)} · probabilidad por mapa ${pct(m.pMap, 1)} · al mejor de ${ev.bestOf}${ev.home.record ? ` · récord ${esc(ev.home.record)} vs ${esc(ev.away.record)}` : ''}</div>`
     : m.live ? `<div class="note mt">Probabilidad en vivo: ${m.live.source === 'ESPN' ? 'modelo de ESPN' : 'modelo del bot según marcador y tiempo'}</div>` : '';
   const warn = !m.known ? `<div class="warn mt">${ev.sport === 'esports' ? 'El bot todavía tiene pocos mapas observados de estos equipos: su Elo es poco confiable. Úsalo como referencia y apóyate en el análisis con IA.' : 'Faltan datos de tabla para uno de los equipos: la estimación se apoya más en el mercado.'}</div>` : '';
@@ -1017,6 +1027,8 @@ function predictionBlock(a) {
 
 function tabOdds(a) {
   const lg = D.leagueById(a.ev.leagueId);
+  if (lg.sport === 'mma' || lg.sport === 'boxing') return predictionBlock(a) + (a.ev.odds ? `<div class="note">Mejor precio en casas internacionales (The Odds API): ${esc(a.ev.home.name)} ${dec(a.ev.odds.home)} · ${esc(a.ev.away.name)} ${dec(a.ev.odds.away)}</div>` : '')
+    + `<div class="note mt">Caliente, Codere, bet365 y Betano tienen momios de ${esc(lg.name)}: captúralos en el boleto y el bot te dice dónde conviene.</div>`;
   if (lg.sport === 'esports') return predictionBlock(a) + `<div class="widget" style="background:var(--fill)"><h3>Momios de eSports</h3><p class="note">Caliente, Codere, bet365 y Betano tienen mercados de ${esc(lg.name)}: abre el boleto y captura el momio que veas en cada casa. El bot calcula el EV con su probabilidad (${pct(a.sels[0]?.p, 1)} / ${pct(a.sels[1]?.p, 1)}) y te dice dónde conviene apostar.</p>
     <div class="flex">${a.sels.map((s) => `<div class="odd"><div class="k">${esc(s.label)}</div><div class="o">${dec(s.minOdds)}</div><div class="p">mínimo ${toAmerican(s.minOdds)}</div></div>`).join('')}</div>
     <p class="note mt">Datos de partidos: ${lg.source === 'lolesports' ? 'LoL Esports' : '<a href="https://liquipedia.net" target="_blank" rel="noopener">Liquipedia</a> (CC BY-SA 3.0)'}.</p></div>`;

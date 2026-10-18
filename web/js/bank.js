@@ -10,7 +10,7 @@ export const DEFAULT_STATE = () => ({
   bankroll: 2000,
   bets: [],
   predictions: {},
-  weights: { soccer: 0.35, football: 0.3, basketball: 0.3, baseball: 0.3, tennis: 0.25, esports: 0.35 },
+  weights: { soccer: 0.35, football: 0.3, basketball: 0.3, baseball: 0.3, tennis: 0.25, mma: 0.2, boxing: 0.2, esports: 0.35 },
   settings: {
     kellyFraction: 0.25, // Kelly al 25%: crecimiento sólido con mucha menos volatilidad
     maxStakePct: 0.03,   // nunca más del 3% de la banca en una apuesta
@@ -262,7 +262,7 @@ function resultOf(bet, ev) {
     return (bet.pick === 'over' ? t > bet.line : t < bet.line) ? 'won' : 'lost';
   }
   let winner;
-  if (ev.sport === 'tennis' || (ev.sport === 'esports' && hs === as)) winner = ev.home.winner ? 'home' : ev.away.winner ? 'away' : null;
+  if (['tennis', 'mma', 'boxing'].includes(ev.sport) || (ev.sport === 'esports' && hs === as)) winner = ev.home.winner ? 'home' : ev.away.winner ? 'away' : null;
   else winner = hs > as ? 'home' : hs < as ? 'away' : 'draw';
   if (!winner) return null;
   if (winner === 'draw' && bet.market === 'Ganador') return 'void';
@@ -385,7 +385,9 @@ export function learnFromEvents(events) {
     const pr = state.predictions[ev.id];
     if (!pr || pr.done || !ev.completed) continue;
     const hs = ev.home.score ?? 0, as = ev.away.score ?? 0;
-    const winner = ev.sport === 'tennis' ? (ev.home.winner ? 'home' : 'away') : hs > as ? 'home' : hs < as ? 'away' : 'draw';
+    const byFlag = ['tennis', 'mma', 'boxing'].includes(ev.sport);
+    if (byFlag && !ev.home.winner && !ev.away.winner) continue; // sin ganador declarado (empate o sin decisión)
+    const winner = byFlag ? (ev.home.winner ? 'home' : 'away') : hs > as ? 'home' : hs < as ? 'away' : 'draw';
     const sum = (probs) => Object.entries(probs).reduce((a, [k, p]) => a + brier(p, k === winner ? 1 : 0), 0);
     pr.outcome = winner;
     pr.brierModel = sum(pr.model);

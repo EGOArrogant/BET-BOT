@@ -2,6 +2,7 @@
 // Todo se normaliza a un formato común de "evento" para que los modelos y la UI no dependan de la fuente.
 
 import { getEsportsEvents } from './esports.js';
+import { marketEvents } from './prediction.js';
 
 const ESPN = 'https://site.api.espn.com/apis/site/v2/sports';
 const ESPN_WEB = 'https://site.web.api.espn.com/apis/v2/sports';
@@ -21,6 +22,8 @@ export const LEAGUES = [
   { id: 'lmb', sport: 'baseball', name: 'Liga Mexicana de Béisbol', short: 'LMB', source: 'mlbstats', sportId: 23, leagueId: 125 },
   { id: 'atp', sport: 'tennis', name: 'ATP', short: 'ATP', path: 'tennis/atp' },
   { id: 'wta', sport: 'tennis', name: 'WTA', short: 'WTA', path: 'tennis/wta' },
+  { id: 'ufc', sport: 'mma', name: 'UFC', short: 'UFC', path: 'mma/ufc' },
+  { id: 'boxing', sport: 'boxing', name: 'Boxeo', short: 'BOX', source: 'markets', oddsKey: 'boxing_boxing' },
   { id: 'lol', sport: 'esports', game: 'lol', name: 'League of Legends', short: 'LoL', source: 'lolesports' },
   { id: 'valorant', sport: 'esports', game: 'valorant', name: 'Valorant', short: 'VAL', source: 'liquipedia', wiki: 'valorant' },
   { id: 'cs2', sport: 'esports', game: 'cs2', name: 'Counter-Strike 2', short: 'CS2', source: 'liquipedia', wiki: 'counterstrike' },
@@ -30,12 +33,18 @@ export const LEAGUES = [
 export const SECTIONS = {
   soccer: { title: 'Fútbol', sub: 'Ligas ordenadas por importancia', sports: ['soccer'] },
   sports: { title: 'Deportes', sub: 'NFL, NBA, béisbol y tenis', sports: ['football', 'basketball', 'baseball', 'tennis'] },
+  combat: { title: 'Combate', sub: 'UFC y boxeo', sports: ['mma', 'boxing'] },
   esports: { title: 'eSports', sub: 'League of Legends, Valorant y Counter-Strike 2', sports: ['esports'] },
 };
 export const sectionLeagues = (sec) => LEAGUES.filter((l) => SECTIONS[sec].sports.includes(l.sport));
 
-export const SPORT_ICON = { soccer: '⚽', football: '🏈', basketball: '🏀', baseball: '⚾', tennis: '🎾', esports: '🎮' };
-export const SPORT_NAME = { soccer: 'Fútbol', football: 'Fútbol americano', basketball: 'Básquetbol', baseball: 'Béisbol', tennis: 'Tenis', esports: 'eSports' };
+export const SPORT_ICON = { soccer: '⚽', football: '🏈', basketball: '🏀', baseball: '⚾', tennis: '🎾', mma: '🥋', boxing: '🥊', esports: '🎮' };
+export const SPORT_NAME = { soccer: 'Fútbol', football: 'Fútbol americano', basketball: 'Básquetbol', baseball: 'Béisbol', tennis: 'Tenis', mma: 'MMA (UFC)', boxing: 'Boxeo', esports: 'eSports' };
+const WEIGHT_ES = {
+  Strawweight: 'Peso paja', Flyweight: 'Peso mosca', Bantamweight: 'Peso gallo', Featherweight: 'Peso pluma', Lightweight: 'Peso ligero',
+  Welterweight: 'Peso wélter', Middleweight: 'Peso medio', 'Light Heavyweight': 'Peso semipesado', Heavyweight: 'Peso pesado', Catchweight: 'Peso pactado',
+};
+const weightEs = (s) => { s = String(s || ''); const w = s.startsWith("Women's ") ? s.slice(8) : s; return (WEIGHT_ES[w] || w) + (s.startsWith("Women's ") ? ' femenil' : ''); };
 
 // Traducciones de textos que ESPN o MLB a veces dejan en inglés.
 const ROUND_ES = [
@@ -175,12 +184,41 @@ function normalizeTennis(ev, league) {
   return out;
 }
 
+// UFC: cada evento de ESPN trae varias peleas; cada pelea se vuelve un "partido" (esquina roja vs azul).
+function normalizeFights(ev, league) {
+  return (ev.competitions || []).filter((c) => (c.competitors || []).length === 2).map((comp) => {
+    const sorted = [...comp.competitors].sort((a, b) => (a.order || 0) - (b.order || 0));
+    const side = (c) => {
+      const a = c.athlete || {};
+      const rec = c.records?.[0]?.summary || '';
+      const [w, l] = rec.split('-').map(Number);
+      return {
+        id: 'f' + (a.id || c.id), name: a.displayName || '¿?', abbr: (a.shortName || a.displayName || '').split(' ').slice(-1)[0],
+        logo: a.id ? `https://a.espncdn.com/i/headshots/mma/players/full/${a.id}.png` : a.flag?.href || '',
+        score: null, form: '', record: rec, recW: Number.isFinite(w) ? w : null, recL: Number.isFinite(l) ? l : null,
+        winner: c.winner === true, seed: '', flag: a.flag?.alt || '', linescores: [],
+      };
+    };
+    const h = side(sorted[0]), a = side(sorted[1]);
+    const st = parseStatus(comp.status);
+    return {
+      id: comp.id, leagueId: league.id, sport: 'mma', name: `${h.name} vs ${a.name}`, date: comp.date || ev.date, ...st,
+      home: h, away: a, odds: null, venue: comp.venue?.fullName || ev.name, tournament: ev.name,
+      round: weightEs(comp.type?.abbreviation || comp.type?.text), rounds: comp.format?.regulation?.periods || 3,
+    };
+  });
+}
+
 async function espnScoreboard(league, dateStr) {
   const url = `${ESPN}/${league.path}/scoreboard${dateStr ? `?dates=${dateStr}` : ''}`;
   const data = await getJSON(url, 15_000);
   const lgLogo = data.leagues?.[0]?.logos?.find((l) => /dark/i.test((l.rel || []).join(' ')))?.href || data.leagues?.[0]?.logos?.[0]?.href;
   if (lgLogo && !/ESPN-icon/i.test(lgLogo)) LEAGUE_LOGO[league.id] = lgLogo;
   if (league.sport === 'tennis') return (data.events || []).flatMap((e) => normalizeTennis(e, league));
+  if (league.sport === 'mma') {
+    if (!dateStr) league._calendar = data.leagues?.[0]?.calendar || [];
+    return (data.events || []).flatMap((e) => normalizeFights(e, league));
+  }
   return (data.events || []).map((e) => normalizeTeamEvent(e, league));
 }
 
@@ -212,6 +250,20 @@ async function lmbSchedule(league, from, to) {
 // Eventos de una liga: hoy y los próximos días (ESPN no acepta rangos, se pide día por día).
 export async function getEvents(league, days = 3) {
   if (league.sport === 'esports') return (await getEsportsEvents(league)).sort((a, b) => new Date(a.date) - new Date(b.date));
+  if (league.source === 'markets') return (await marketEvents(league)).sort((a, b) => new Date(a.date) - new Date(b.date));
+  if (league.sport === 'mma') {
+    // Evento más reciente + los próximos del calendario de la UFC (dos semanas).
+    const out = new Map();
+    for (const f of await espnScoreboard(league)) out.set(f.id, f);
+    const now = Date.now();
+    const next = (league._calendar || []).map((c) => (typeof c === 'string' ? { startDate: c } : c))
+      .filter((c) => { const t = new Date(c.startDate).getTime(); return t > now - 86400000 && t < now + 15 * 86400000; }).slice(0, 2);
+    for (const c of next) {
+      const d = new Date(new Date(c.startDate).getTime() - 5 * 3600000); // fecha del evento en hora de EE. UU.
+      try { for (const f of await espnScoreboard(league, ymd(d))) out.set(f.id, f); } catch {}
+    }
+    return [...out.values()].sort((a, b) => new Date(a.date) - new Date(b.date));
+  }
   const now = new Date();
   if (league.source === 'mlbstats') {
     const from = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
@@ -232,6 +284,11 @@ export async function getEvents(league, days = 3) {
 export async function getEventsAround(league, isoDate) {
   const d = new Date(isoDate);
   if (league.sport === 'esports') return getEsportsEvents(league);
+  if (league.source === 'markets') return marketEvents(league);
+  if (league.sport === 'mma') {
+    const res = await Promise.allSettled([new Date(d.getTime() - 86400000), d].map((x) => espnScoreboard(league, ymd(x))));
+    return res.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+  }
   if (league.source === 'mlbstats') {
     const day = d.toISOString().slice(0, 10);
     return lmbSchedule(league, day, day);
@@ -251,6 +308,7 @@ function collectEntries(node, groupName, out) {
 
 export async function getStandings(league) {
   if (league.sport === 'esports') return []; // el ranking de eSports es el Elo propio del bot (lo arma la app)
+  if (league.sport === 'mma' || league.sport === 'boxing') return []; // en combate no hay tabla: cuenta el récord de cada peleador
   if (league.sport === 'tennis') return getTennisRankings(league);
   if (league.source === 'mlbstats') {
     const season = new Date().getFullYear();
@@ -305,7 +363,7 @@ export async function getTeamTable(league) {
 
 // ---------- Detalle de partido ----------
 export async function getSummary(league, eventId) {
-  if (league.sport === 'esports') {
+  if (league.sport === 'esports' || league.sport === 'mma' || league.sport === 'boxing') {
     return { lineups: [], stats: [], keyEvents: [], commentary: [], news: [], injuries: [], winProb: null, lastFive: [] };
   }
   if (league.source === 'mlbstats') {
@@ -365,6 +423,7 @@ export async function getSummary(league, eventId) {
 // ---------- Noticias ----------
 export async function getLeagueNews(league) {
   if (league.sport === 'esports') return searchNews(`${league.name} esports`, 10);
+  if (league.sport === 'boxing') return searchNews('boxeo pelea', 12);
   if (!league.path) return [];
   try {
     const data = await getJSON(`${ESPN}/${league.path}/news`, 300_000);

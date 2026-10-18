@@ -1,8 +1,11 @@
 {
-  "version": "1.3.1",
+  "version": "1.4.0",
   "date": "2026-10-18",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Nueva sección Combate: UFC (cartelera de ESPN con récord, país y división de cada peleador) y Boxeo",
+    "Precios de UFC y boxeo desde Polymarket y Kalshi; boxeo también desde The Odds API (cada 30 min para cuidar créditos)",
+    "Las peleas se liquidan solas con el ganador oficial; la IA tiene conocimiento específico de MMA y boxeo",
     "Diseño para celular (referencia iPhone 17 Pro Max): letras más grandes, botones del tamaño del dedo y zonas seguras de la Dynamic Island",
     "Las tablas se convierten en tarjetas legibles en el celular",
     "Apuestas como tarjetas con contorno de color: abierta, en vivo, conviene cobrar, ganada, perdida, cobrada y anulada",

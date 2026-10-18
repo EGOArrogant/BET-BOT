@@ -11,11 +11,13 @@ const KALSHI = 'https://api.elections.kalshi.com/trade-api/v2';
 const POLY_SERIES = {
   nfl: 12185, nba: 10345, mlb: 3, 'eng.1': 10188, 'esp.1': 10193, 'ita.1': 10203, 'fra.1': 10195,
   'uefa.champions': 10204, 'mex.1': 10290, atp: 10365, wta: 10366, lol: 10311, valorant: 10369, cs2: 10310,
+  ufc: 38, boxing: 12578,
 };
 const KALSHI_SERIES = {
   nfl: 'KXNFLGAME', nba: 'KXNBAGAME', mlb: 'KXMLBGAME', lmb: 'KXLMBGAME', 'eng.1': 'KXEPLGAME', 'esp.1': 'KXLALIGAGAME',
   'ita.1': 'KXSERIEAGAME', 'fra.1': 'KXLIGUE1GAME', 'uefa.champions': 'KXUCLGAME', 'mex.1': 'KXLIGAMXGAME',
   atp: 'KXATPMATCH', wta: 'KXWTAMATCH', lol: 'KXLOLGAME', valorant: 'KXVALORANTGAME', cs2: 'KXCS2GAME',
+  ufc: 'KXUFCFIGHT', boxing: 'KXBOXINGFIGHT',
 };
 
 const cache = new Map();
@@ -30,7 +32,7 @@ const num = (x) => (x === undefined || x === null || x === '' ? null : Number(x)
 const parseArr = (s) => { try { return Array.isArray(s) ? s : JSON.parse(s || '[]'); } catch { return []; } };
 
 // ---------- Polymarket ----------
-async function polymarket(league) {
+async function polymarket(league, { includeResolved = false } = {}) {
   const sid = POLY_SERIES[league.id];
   if (!sid) return [];
   const since = new Date(Date.now() - 6 * 3600000).toISOString();
@@ -60,8 +62,9 @@ async function polymarket(league) {
       }
     }
     const liq = Number(e.liquidity || ml.reduce((a, m) => a + Number(m.liquidity || 0), 0)) || 0;
-    if (outcomes.every((o) => !(o.prob > 0 && o.prob < 1))) continue; // mercado ya resuelto
-    out.push({ source: 'Polymarket', title: e.title, start, outcomes, liquidity: liq, url: `https://polymarket.com/event/${e.slug}` });
+    const resolved = outcomes.every((o) => !(o.prob > 0 && o.prob < 1));
+    if (resolved && !includeResolved) continue; // mercado ya resuelto
+    out.push({ source: 'Polymarket', title: e.title, start, outcomes, liquidity: liq, resolved, url: `https://polymarket.com/event/${e.slug}` });
   }
   return out;
 }
@@ -86,6 +89,66 @@ async function kalshi(league) {
     if (outcomes.length < 2) continue;
     const exp = e.markets?.[0]?.expected_expiration_time;
     out.push({ source: 'Kalshi', title: e.title, start: exp, outcomes, liquidity: (e.markets || []).reduce((a, m) => a + Number(m.volume || 0), 0), url: `https://kalshi.com/markets/${String(series).toLowerCase()}` });
+  }
+  return out;
+}
+
+// ---------- Peleas armadas solo desde mercados (boxeo: ESPN no lo cubre) ----------
+// Polymarket + Kalshi + The Odds API (si tienes clave). Cuando Polymarket resuelve el mercado (precio 1/0),
+// la pelea se marca como terminada con su ganador para poder liquidar las apuestas.
+const fightKey = (a, b) => [a, b].map((n) => tokens(n).sort().join('')).sort().join('|');
+let oddsApiOk = true;
+async function oddsApiFights(league) {
+  if (!league.oddsKey || !oddsApiOk) return [];
+  return cached('odds:' + league.id, 30 * 60_000, async () => { // cada 30 min para cuidar tus créditos
+    const p = `sports/${league.oddsKey}/odds?regions=us,eu&markets=h2h&oddsFormat=decimal`;
+    const res = await fetch('/api/odds?p=' + encodeURIComponent(p));
+    if (res.status === 401) { oddsApiOk = false; return []; } // sin clave de The Odds API
+    if (!res.ok) return [];
+    return res.json();
+  });
+}
+
+export async function marketEvents(league) {
+  const [poly, kal, odds] = await Promise.all([
+    polymarket(league, { includeResolved: true }).catch(() => []), kalshi(league).catch(() => []), oddsApiFights(league).catch(() => []),
+  ]);
+  const map = new Map();
+  const now = Date.now();
+  const add = (names, start, extra = {}) => {
+    if (!names[0] || !names[1]) return;
+    const k = fightKey(names[0], names[1]);
+    const cur = map.get(k) || { names, start, winner: null, odds: null, src: [] };
+    if (!cur.start && start) cur.start = start;
+    Object.assign(cur, Object.fromEntries(Object.entries(extra).filter(([, v]) => v != null)));
+    map.set(k, cur);
+  };
+  for (const m of poly) {
+    const t = m.outcomes.filter((o) => !o.draw);
+    if (t.length !== 2) continue;
+    add([t[0].name, t[1].name], m.start, { winner: m.resolved ? (t[0].prob === 1 ? 0 : t[1].prob === 1 ? 1 : null) : null });
+  }
+  for (const m of kal) { const t = m.outcomes.filter((o) => !o.draw); if (t.length === 2) add([t[0].name, t[1].name], m.start); }
+  for (const g of odds || []) {
+    const price = (name) => {
+      let best = null;
+      for (const b of g.bookmakers || []) for (const mk of b.markets || []) if (mk.key === 'h2h') for (const o of mk.outcomes) if (o.name === name && (!best || o.price > best)) best = o.price;
+      return best;
+    };
+    add([g.home_team, g.away_team], g.commence_time, { odds: { provider: 'The Odds API (mejor precio)', home: price(g.home_team), away: price(g.away_team) } });
+  }
+  const out = [];
+  for (const [k, f] of map) {
+    const t = f.start ? new Date(f.start).getTime() : now;
+    const done = f.winner != null;
+    if (!done && t < now - 12 * 3600000) continue; // pelea vieja sin resultado
+    const state = done ? 'post' : t > now ? 'pre' : 'in';
+    const side = (i) => ({ id: 'bx' + tokens(f.names[i]).join(''), name: f.names[i], abbr: f.names[i].split(' ').slice(-1)[0], logo: '', score: null, form: '', record: '', winner: done && f.winner === i, linescores: [] });
+    out.push({
+      id: 'bx-' + k, leagueId: league.id, sport: league.sport, name: `${f.names[0]} vs ${f.names[1]}`, date: new Date(t).toISOString(),
+      state, completed: done, detail: state === 'in' ? 'En curso' : done ? 'Final' : '', clock: '', period: 0,
+      home: side(0), away: side(1), odds: f.odds, venue: '', tournament: league.name, round: '',
+    });
   }
   return out;
 }

@@ -41,6 +41,8 @@ Cómo decides:
   · NBA: los back-to-back y el descanso de estrellas (load management) mueven mucho. Revisa los reportes de lesiones 30 minutos antes.
   · MLB/LMB: el abridor probable es el factor #1. El parque y el viento afectan los totales.
   · Tenis: la superficie, la fatiga del torneo anterior y los retiros. El ranking ATP/WTA reacciona lento a la forma reciente.
+  · UFC/MMA: los estilos chocan (luchador vs striker), el corte de peso y el cambio de categoría, la inactividad larga, la edad (>35 años baja en divisiones ligeras), los reemplazos de último minuto (peleador con poco campamento) y el alcance. Los favoritos grandes en MMA pierden más seguido que en otros deportes.
+  · Boxeo: la decisión de los jueces favorece al local y al campeón, los récords inflados contra rivales débiles engañan, y la actividad reciente y el peso también cuentan.
   · eSports: los cambios de roster y de parche, el formato BO1 (más aleatorio) contra BO3/BO5, y la región (LCK/LPL suelen dominar en LoL).
 - Responde en español de México.`;
 
