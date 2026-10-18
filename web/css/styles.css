@@ -554,3 +554,27 @@ html { -webkit-text-size-adjust: 100%; }
 .sharp-box { background: color-mix(in srgb, var(--purple, #af52de) 10%, var(--fill)); border: 1px solid color-mix(in srgb, var(--purple, #af52de) 35%, transparent); }
 tr.sharp-row td { background: color-mix(in srgb, var(--purple, #af52de) 8%, transparent); }
 img.avatar { width: 22px; height: 22px; border-radius: 50%; vertical-align: middle; margin-right: 6px; object-fit: cover; }
+
+/* ---------- App del iPhone (pantalla de inicio) ---------- */
+html { -webkit-text-size-adjust: 100%; }
+body { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+html.standalone body { overscroll-behavior-y: none; }
+html.standalone .tabbar, html.standalone .statusbar, html.standalone .segmented, html.standalone .btn, html.standalone .pill { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+html.standalone #qr-btn { display: none !important; }
+.haptic-sink { position: fixed; left: -100px; top: -100px; width: 1px; height: 1px; opacity: 0; pointer-events: none; overflow: hidden; }
+.spinner { display: inline-block; width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid color-mix(in srgb, var(--text, #fff) 25%, transparent); border-top-color: var(--blue, #0a84ff); animation: spin .8s linear infinite; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.refresh-pull { position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 8px); z-index: 90; width: 40px; height: 40px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--glass, rgba(40,40,50,.8)); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 6px 20px rgba(0,0,0,.3); transform: translate(-50%, -50px); opacity: 0; transition: transform .2s, opacity .2s; pointer-events: none; font-weight: 700; }
+.refresh-pull .arrow { transition: transform .2s; }
+.offline { position: fixed; left: 12px; right: 12px; bottom: calc(96px + env(safe-area-inset-bottom)); z-index: 95; max-width: 460px; margin: 0 auto;
+  padding: 16px 18px; border-radius: 24px; text-align: center; border: 1px solid color-mix(in srgb, var(--orange-fill, #ff9f0a) 50%, transparent);
+  transform: translateY(30px); opacity: 0; pointer-events: none; transition: transform .3s cubic-bezier(.2,1.2,.4,1), opacity .3s; }
+.offline.show { transform: none; opacity: 1; pointer-events: auto; }
+.offline .offline-ic { font-size: 26px; margin-bottom: 6px; }
+html.is-offline #view { filter: grayscale(.6); opacity: .7; transition: filter .3s, opacity .3s; }
+.install-hint { position: fixed; left: 12px; right: 12px; bottom: calc(96px + env(safe-area-inset-bottom)); z-index: 80; max-width: 460px; margin: 0 auto;
+  display: flex; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 22px; animation: drop .4s cubic-bezier(.2,1.3,.4,1); }
+.install-ic { width: 46px; height: 46px; border-radius: 11px; flex: none; }
+.share-ic svg { width: 16px; height: 16px; vertical-align: -3px; color: var(--blue, #0a84ff); }

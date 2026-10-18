@@ -1,8 +1,14 @@
 {
-  "version": "1.7.1",
+  "version": "1.8.0",
   "date": "2026-10-18",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "App para iPhone: instálala desde Safari con Compartir → Agregar a pantalla de inicio; se abre en pantalla completa con su propio icono",
+    "Pantalla de inicio propia para cada iPhone (incluido el 17 Pro Max) e icono nuevo",
+    "La app instalada guarda tu acceso: no vuelve a pedir el QR",
+    "Aviso de \"Sin conexión con tu PC\" y reconexión automática cuando la PC vuelve o regresas al WiFi",
+    "Desliza hacia abajo para actualizar; al volver a abrir la app se actualiza sola",
+    "Vibración ligera al tocar pestañas y botones (iOS 18 o más reciente)",
     "Tiempo real: lo que está en vivo se actualiza cada 5 s (antes 15 s), y el partido abierto también cada 5 s",
     "CS2 y Valorant: marcador mapa por mapa y mapa en juego desde bo3.gg; los partidos terminados ya no se quedan como \"En vivo 0-0\"",
     "LoL, ESPN (fútbol, NFL, NBA, MLB, tenis, UFC), LMB y precios de Polymarket/Kalshi con datos de hace ~5–8 s",

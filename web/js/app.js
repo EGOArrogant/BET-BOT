@@ -7,6 +7,7 @@ import * as K from './books.js';
 import { updateElo, esportsTable } from './esports.js';
 import { getPredictionMarkets, matchPrediction, nameScore } from './prediction.js';
 import * as SM from './smart.js';
+import { initShell } from './appshell.js';
 
 // ---------- utilidades ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -389,7 +390,7 @@ function labelTables(root) {
 function serverBanner() {
   if (!S.cfg.local || !S.version) return '';
   const sv = S.cfg.serverVersion;
-  if (sv && cmpVer(sv, '1.7.1') >= 0) return '';
+  if (sv && cmpVer(sv, '1.8.0') >= 0) return '';
   return `<div class="warn" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="grow"><b>El servidor sigue con la versión anterior.</b> Algunas funciones (como Top Polymarket) no van a funcionar hasta reiniciarlo.</div><button class="btn small primary" data-restartserver>↻ Reiniciar servidor</button></div>`;
 }
 
@@ -1813,7 +1814,7 @@ async function loadPhone() {
     const url = `http://${ip}:${net.port}/?t=${net.token}`;
     const q = qr(0, 'M'); q.addData(url); q.make();
     return `<div class="widget glass qr-card"><div class="qr">${q.createSvgTag({ cellSize: 6, margin: 2, scalable: true })}</div>
-      <div class="grow"><h3>Escanéalo con la cámara de tu celular</h3><ol class="steps"><li>Conecta el celular a la misma red WiFi que esta PC.</li><li>Abre la cámara y apunta al código.</li><li>En el navegador: Compartir → <b>Agregar a pantalla de inicio</b> para tenerlo como app.</li></ol>
+      <div class="grow"><h3>Escanéalo con la cámara de tu celular</h3><ol class="steps"><li>Conecta el celular a la misma red WiFi que esta PC.</li><li>Abre la cámara y apunta al código.</li><li>Se abre en <b>Safari</b>. Toca <b>Compartir</b> → <b>Agregar a pantalla de inicio</b> → <b>Agregar</b>.</li><li>Abre <b>BetBot</b> desde su icono: pantalla completa, desliza hacia abajo para actualizar y se reconecta sola con tu PC.</li></ol>
       <div class="note">Dirección: <span class="kbd">http://${esc(ip)}:${net.port}</span></div><div class="warn mt">El QR contiene tu código de acceso: no lo compartas.</div></div></div>`;
   }).join('');
   box.innerHTML = publicWarn + cards + away;
@@ -2090,6 +2091,8 @@ async function liveTick() {
   B.onConflict(() => { toast('↻ Se sincronizaron cambios hechos desde otro dispositivo'); render(); });
   render();
   window.__bbStarted = true; // la app ya se pintó: el aviso de error de arranque ya no aplica
+  // App del iPhone: conexión con la PC, deslizar para actualizar, actualizar al volver, guía de instalación.
+  try { initShell({ refresh: async () => { await refreshAll(); }, isLocal: !!S.cfg.local }); } catch (e) { console.warn('appshell', e); }
   // Datos en tiempo real: escaneo completo cada minuto (si tenías el valor anterior de 3 min, se ajusta a 1).
   if (!B.getState().settings.rt13) B.updateSettings({ scanMinutes: Math.min(B.getState().settings.scanMinutes, 1), rt13: true });
   if (!B.getState().settings.w13) {

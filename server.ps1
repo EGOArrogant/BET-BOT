@@ -8,7 +8,7 @@
 param([int]$Port = 8787)
 
 # Versión del servidor: la app la compara con la de la página para avisar si hace falta reiniciarlo.
-$SERVER_VERSION = '1.7.1'
+$SERVER_VERSION = '1.8.0'
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -125,6 +125,8 @@ $deniedHtml = @'
 function Test-Auth($ctx) {
   $req = $ctx.Request
   if ($req.IsLocal) { return $true }
+  # Icono, pantalla de inicio y manifiesto de la app del iPhone: iOS los pide sin la sesion.
+  if ($req.Url.AbsolutePath -like '/icons/*' -or $req.Url.AbsolutePath -eq '/manifest.webmanifest') { return $true }
   $c = $req.Cookies['bb_t']
   if ($c -and $c.Value -eq $token) { return $true }
   if ($req.Headers['X-BetBot-Token'] -eq $token) { return $true }
@@ -370,6 +372,28 @@ try {
         if (-not $req.IsLocal) { Send-Text $ctx '{"error":"solo desde la PC"}' 'application/json' 403; continue }
         Send-Text $ctx '{"ok":true,"restarting":true}'
         $script:restart = $true
+      }
+      elseif ($path -eq '/manifest.webmanifest') {
+        # App instalada en el iPhone: si quien la instala ya tiene acceso, el inicio lleva su codigo
+        # (la app de la pantalla de inicio no comparte la sesion de Safari y si no, pediria el QR otra vez).
+        $ck = $req.Cookies['bb_t']
+        $authed = $ck -and $ck.Value -eq $token
+        $m = [ordered]@{
+          id = '/'; name = 'BetBot MX'; short_name = 'BetBot'; description = 'Analisis de apuestas deportivas con IA (banca ficticia)'
+          start_url = $(if ($authed) { "/?t=$token&app=1" } else { '/?app=1' }); scope = '/'
+          display = 'standalone'; orientation = 'portrait'; background_color = '#0b0b10'; theme_color = '#0b0b10'; lang = 'es-MX'
+          icons = @(
+            @{ src = '/icons/icon-180.png'; sizes = '180x180'; type = 'image/png' },
+            @{ src = '/icons/icon-192.png'; sizes = '192x192'; type = 'image/png' },
+            @{ src = '/icons/icon-512.png'; sizes = '512x512'; type = 'image/png' },
+            @{ src = '/icons/icon-maskable-512.png'; sizes = '512x512'; type = 'image/png'; purpose = 'maskable' })
+        }
+        $ctx.Response.Headers['Cache-Control'] = 'no-store'
+        Send-Text $ctx ($m | ConvertTo-Json -Depth 4 -Compress) 'application/manifest+json'
+      }
+      elseif ($path -eq '/api/apptoken') {
+        # Solo para quien ya tiene acceso: permite que "Agregar a pantalla de inicio" guarde el enlace con su codigo.
+        Send-Text $ctx (@{ token = $(if ($req.IsLocal) { '' } else { $token }) } | ConvertTo-Json -Compress)
       }
       else {
         $rel = if ($path -eq '/') { 'index.html' } else { $path.TrimStart('/') -replace '/', '\' }
