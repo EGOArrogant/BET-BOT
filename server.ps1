@@ -258,7 +258,9 @@ try {
       # ---------- solo desde esta PC ----------
       elseif ($path -eq '/api/network') {
         if (-not $req.IsLocal) { Send-Text $ctx '{"error":"solo desde la PC"}' 'application/json' 403; continue }
-        $out = @{ lan = $script:lanEnabled; ips = @(Get-LanIps); port = $Port; token = $token }
+        # Tipo de red de Windows: si es "Public", el firewall bloquea al celular (la regla del bot es solo para redes privadas).
+        $profiles = @(Get-NetConnectionProfile -ErrorAction SilentlyContinue | ForEach-Object { @{ name = [string]$_.InterfaceAlias; network = [string]$_.Name; category = [string]$_.NetworkCategory } })
+        $out = @{ lan = $script:lanEnabled; ips = @(Get-LanIps); port = $Port; token = $token; profiles = $profiles }
         Send-Text $ctx ($out | ConvertTo-Json -Compress)
       }
       elseif ($path -eq '/api/phone/enable' -and $req.HttpMethod -eq 'POST') {

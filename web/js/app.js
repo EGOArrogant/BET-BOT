@@ -1117,6 +1117,15 @@ async function loadPhone() {
   try { net = await (await fetch('/api/network')).json(); } catch { box.innerHTML = '<div class="warn">No se pudo leer la red.</div>'; return; }
   const away = `<div class="widget glass mt"><h3>¿Fuera de casa?</h3><p class="note">El QR funciona en tu misma red WiFi. Para usar el bot con datos móviles, instala <b>Tailscale</b> (gratis) en la PC y en el celular con la misma cuenta. Luego entra desde el celular a <span class="kbd">http://IP-de-Tailscale-de-tu-PC:${net.port}/?t=…</span> (el mismo enlace del QR, cambiando la IP). Así no expones tu PC a internet.</p>
     <p class="note">El bot sigue analizando mientras la PC esté encendida con <span class="kbd">iniciar.bat</span> abierto. El piloto automático corre en el dispositivo donde lo activaste.</p></div>`;
+  // Red marcada como "Pública": Windows bloquea al celular aunque el QR sea correcto (pantalla negra en el teléfono).
+  const pub = (net.profiles || []).filter((p) => /public/i.test(p.category));
+  const publicWarn = pub.length ? `<div class="widget glass" style="border:2px solid var(--orange-fill);margin-bottom:14px"><h3>⚠️ Tu red está como "Pública": Windows bloquea al celular</h3>
+    <p>Por eso el celular se queda cargando en negro. Cámbiala a <b>Privada</b> (solo hazlo en la red de tu casa):</p>
+    <ol class="steps"><li>Abre <b>Configuración</b> de Windows (tecla Windows + I).</li>
+    <li>Ve a <b>Red e Internet</b> → <b>${esc(/wi-?fi|wlan/i.test(pub[0].name) ? 'Wi-Fi' : 'Ethernet')}</b>${pub[0].network ? ` → <b>${esc(pub[0].network)}</b>` : ''}.</li>
+    <li>En <b>Tipo de perfil de red</b> elige <b>Red privada</b>.</li>
+    <li>Vuelve a escanear el QR con el celular (no hace falta reiniciar el bot).</li></ol>
+    <div class="note">Redes afectadas: ${pub.map((p) => esc(`${p.name}${p.network ? ' (' + p.network + ')' : ''}`)).join(', ')}</div></div>` : '';
   if (!net.lan) {
     box.innerHTML = `<div class="widget glass"><h3>Activar acceso desde el celular</h3>
       <p>Para que tu celular pueda abrir el bot, Windows necesita permitirlo una sola vez. Presiona el botón y acepta el aviso de administrador que aparecerá en esta PC.</p>
@@ -1125,7 +1134,7 @@ async function loadPhone() {
       <details class="mt"><summary class="note">¿No funcionó el botón? Hazlo manual</summary><ol class="steps note">
       <li>Cierra la ventana negra de BetBot MX.</li>
       <li>En la carpeta del bot, da doble clic en <span class="kbd">habilitar-telefono.bat</span> y acepta el aviso de administrador.</li>
-      <li>Abre de nuevo <span class="kbd">iniciar.bat</span> y regresa aquí.</li></ol></details></div>${away}`;
+      <li>Abre de nuevo <span class="kbd">iniciar.bat</span> y regresa aquí.</li></ol></details></div>${publicWarn}${away}`;
     return;
   }
   if (!net.ips.length) { box.innerHTML = '<div class="warn">No se encontró una red WiFi o Ethernet activa.</div>' + away; return; }
@@ -1138,7 +1147,7 @@ async function loadPhone() {
       <div class="grow"><h3>Escanéalo con la cámara de tu celular</h3><ol class="steps"><li>Conecta el celular a la misma red WiFi que esta PC.</li><li>Abre la cámara y apunta al código.</li><li>En el navegador: Compartir → <b>Agregar a pantalla de inicio</b> para tenerlo como app.</li></ol>
       <div class="note">Dirección: <span class="kbd">http://${esc(ip)}:${net.port}</span></div><div class="warn mt">El QR contiene tu código de acceso: no lo compartas.</div></div></div>`;
   }).join('');
-  box.innerHTML = cards + away;
+  box.innerHTML = publicWarn + cards + away;
 }
 
 // ---------- ajustes: claves y actualizaciones ----------
@@ -1344,6 +1353,7 @@ function schedule() {
   try { await initAI(S.cfg); } catch (e) { console.warn('No se pudo cargar el SDK de IA', e); }
   B.onConflict(() => { toast('↻ Se sincronizaron cambios hechos desde otro dispositivo'); render(); });
   render();
+  window.__bbStarted = true; // la app ya se pintó: el aviso de error de arranque ya no aplica
   await refreshAll();
   schedule();
   // Sincroniza con otros dispositivos (PC ↔ celular).

@@ -37,7 +37,7 @@
       </div>
     </header>
 
-    <main id="view"></main>
+    <main id="view"><div class="widget glass empty" id="boot">⏳ Cargando BetBot MX…</div></main>
   </div>
 
   <nav class="tabbar glass" id="tabbar"></nav>
@@ -53,6 +53,21 @@
   </section>
 
   <div class="toasts" id="toasts"></div>
+  <script>
+    // Si algo falla al iniciar, se muestra el error en pantalla en lugar de dejarla en negro.
+    (function () {
+      function show(msg) {
+        var v = document.getElementById('view');
+        if (!v || window.__bbStarted) return;
+        v.innerHTML = '<div class="widget glass" style="border:2px solid #ff453a"><b>No se pudo cargar BetBot MX</b><p class="note">' +
+          String(msg).replace(/[<>&]/g, '') + '</p><p class="note">Recarga la página. Si sigue igual, toma captura de esta pantalla y envíasela a Claude.</p></div>';
+      }
+      window.addEventListener('error', function (e) { show(e.message || 'Error al cargar un archivo'); });
+      window.addEventListener('unhandledrejection', function (e) { show((e.reason && e.reason.message) || e.reason); });
+      setTimeout(function () { if (!window.__bbStarted) show('La app tardó demasiado en iniciar (revisa la conexión con la PC).'); }, 20000);
+    })();
+  </script>
+  <script nomodule>document.getElementById('view').innerHTML = '<div class="widget empty">Tu navegador es muy antiguo para BetBot MX. Actualízalo o usa Chrome/Safari reciente.</div>';</script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

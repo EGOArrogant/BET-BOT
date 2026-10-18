@@ -1,8 +1,10 @@
 {
-  "version": "1.2.0",
+  "version": "1.2.1",
   "date": "2026-10-17",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Celular: detecta si la red de Windows está como Pública (bloquea al teléfono) y explica cómo cambiarla",
+    "Pantalla de carga y aviso de error visible en lugar de una pantalla negra",
     "Botón de código QR en el encabezado y activación del celular con un clic (con el aviso de Windows)",
     "Notificaciones: marcar como leídas, Marcar todas, filtros (Sin leer, Oro, Noticias, Bot) y menos avisos del bot",
     "Aprendizaje sin IA: apuestas sombra por segmento; el piloto automático evita los segmentos con pérdidas",
