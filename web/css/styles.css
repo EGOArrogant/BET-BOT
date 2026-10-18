@@ -542,6 +542,14 @@ html { -webkit-text-size-adjust: 100%; }
 
 /* Top Polymarket */
 .tag.smart-tag { background: color-mix(in srgb, var(--teal) 20%, transparent); color: var(--teal); }
+.maps-strip { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 4px 0 14px; }
+.map-chip { background: var(--fill); border-radius: 12px; padding: 6px 12px; text-align: center; min-width: 92px; border: 1px solid transparent; }
+.map-chip b { font-size: 16px; font-variant-numeric: tabular-nums; }
+.map-chip.live { border-color: var(--red); }
+.map-chip.next { opacity: .55; }
+.map-chip.w-home { box-shadow: inset 3px 0 0 var(--blue); }
+.map-chip.w-away { box-shadow: inset -3px 0 0 var(--orange-fill); }
+.maps-src { width: 100%; text-align: center; }
 .tag.sharp-tag { background: color-mix(in srgb, var(--purple, #af52de) 20%, transparent); color: var(--purple, #af52de); }
 .sharp-box { background: color-mix(in srgb, var(--purple, #af52de) 10%, var(--fill)); border: 1px solid color-mix(in srgb, var(--purple, #af52de) 35%, transparent); }
 tr.sharp-row td { background: color-mix(in srgb, var(--purple, #af52de) 8%, transparent); }

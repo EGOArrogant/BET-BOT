@@ -36,7 +36,7 @@ async function polymarket(league, { includeResolved = false } = {}) {
   const sid = POLY_SERIES[league.id];
   if (!sid) return [];
   const since = new Date(Date.now() - 6 * 3600000).toISOString();
-  const data = await cached('poly:' + league.id, 30_000, async () => {
+  const data = await cached('poly:' + league.id, 8_000, async () => {
     const res = await fetch(`${POLY}/events?series_id=${sid}&closed=false&limit=100&end_date_min=${encodeURIComponent(since)}`);
     if (!res.ok) throw new Error('Polymarket HTTP ' + res.status);
     return res.json();
@@ -79,7 +79,7 @@ async function polymarket(league, { includeResolved = false } = {}) {
 async function kalshi(league) {
   const series = KALSHI_SERIES[league.id];
   if (!series) return [];
-  const data = await cached('kalshi:' + league.id, 30_000, async () => {
+  const data = await cached('kalshi:' + league.id, 8_000, async () => {
     const url = `${KALSHI}/events?series_ticker=${series}&status=open&with_nested_markets=true&limit=100`;
     const res = await fetch('/api/proxy?url=' + encodeURIComponent(url));
     if (!res.ok) throw new Error('Kalshi HTTP ' + res.status);

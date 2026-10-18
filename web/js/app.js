@@ -389,7 +389,7 @@ function labelTables(root) {
 function serverBanner() {
   if (!S.cfg.local || !S.version) return '';
   const sv = S.cfg.serverVersion;
-  if (sv && cmpVer(sv, '1.7.0') >= 0) return '';
+  if (sv && cmpVer(sv, '1.7.1') >= 0) return '';
   return `<div class="warn" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="grow"><b>El servidor sigue con la versión anterior.</b> Algunas funciones (como Top Polymarket) no van a funcionar hasta reiniciarlo.</div><button class="btn small primary" data-restartserver>↻ Reiniciar servidor</button></div>`;
 }
 
@@ -1223,7 +1223,7 @@ async function openMatch(k, tab = 'analysis') {
     await refreshLeague(lg).catch(() => {});
     try { const sum = await D.getSummary(lg, a.ev.id); S.summaries.set(k, sum); const cur = S.analysis.get(k); if (cur) analyze(cur.ev, S.tables.get(lg.id), sum.winProb); } catch {}
     renderSheet();
-  }, 15_000); // partido en vivo abierto: se actualiza cada 15 s
+  }, 5_000); // partido en vivo abierto: se actualiza cada 5 s
 }
 
 function closeSheets() {
@@ -1245,6 +1245,8 @@ function renderSheet() {
     ? [['analysis', 'Análisis'], ['smart', '🧠 Dinero inteligente'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']]
     : [['analysis', 'Análisis'], ['smart', '🧠 Dinero inteligente'], ['lineups', ev.sport === 'soccer' ? 'Alineaciones' : 'Plantilla'], ['stats', 'Estadísticas'], ['feed', 'Minuto a minuto'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']];
   $('#sheet-body').innerHTML = `<div class="scoreboard">${team(ev.home)}<div><div class="big">${esc(big)}</div><div class="st">${status}</div>${ev.sport === 'tennis' && ev.state !== 'pre' ? `<div class="note">${ev.home.linescores.join(' ')}<br>${ev.away.linescores.join(' ')}</div>` : ''}</div>${team(ev.away)}</div>
+    ${ev.maps?.length ? `<div class="maps-strip">${ev.maps.map((m) => `<div class="map-chip ${m.status}${m.winner ? ' w-' + m.winner : ''}"><div class="note">Mapa ${m.n}${m.map ? ' · ' + esc(m.map) : ''}</div><b>${m.status === 'done' ? `${m.home}-${m.away}` : m.status === 'live' ? '<span class="dot live"></span> en juego' : '—'}</b></div>`).join('')}
+      <div class="note maps-src">Mapas en tiempo real: ${esc(ev.liveSource || '')}</div></div>` : ''}
     <div class="segmented tabs-inline">${tabs.map(([k, l]) => `<button data-stab="${k}" class="${S.sheetTab === k ? 'active' : ''}">${l}</button>`).join('')}</div>
     <div id="stab-body">${sheetTab(a, sum)}</div>`;
   labelTables($('#sheet-body'));
@@ -2060,7 +2062,7 @@ function schedule() {
   scanTimer = setInterval(refreshAll, Math.max(1, B.getState().settings.scanMinutes) * 60_000);
 }
 
-// Tiempo real: cada 15 s se actualizan solo las ligas con partidos en vivo (o por empezar en 10 min):
+// Tiempo real: cada 5 s se actualizan solo las ligas con partidos en vivo (o por empezar en 10 min):
 // marcadores, probabilidades en vivo, precios de Polymarket/Kalshi y liquidación de apuestas.
 let liveBusy = false;
 async function liveTick() {
@@ -2099,7 +2101,7 @@ async function liveTick() {
   }
   await refreshAll();
   schedule();
-  setInterval(liveTick, 15_000);
+  setInterval(liveTick, 5_000);
   // Sincroniza con otros dispositivos (PC ↔ celular).
   setInterval(async () => { if (await B.pullState()) render(); }, 30_000);
   document.addEventListener('visibilitychange', async () => { if (!document.hidden && await B.pullState()) render(); });

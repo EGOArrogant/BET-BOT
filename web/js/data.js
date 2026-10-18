@@ -259,7 +259,8 @@ export async function getFighter(athleteId) {
 
 async function espnScoreboard(league, dateStr) {
   const url = `${ESPN}/${league.path}/scoreboard${dateStr ? `?dates=${dateStr}` : ''}`;
-  const data = await getJSON(url, 15_000);
+  // Tiempo real: el marcador del día (sin fecha) se refresca cada ~4 s; los días siguientes, cada minuto.
+  const data = await getJSON(url, dateStr ? 60_000 : 4_000);
   const lgLogo = data.leagues?.[0]?.logos?.find((l) => /dark/i.test((l.rel || []).join(' ')))?.href || data.leagues?.[0]?.logos?.[0]?.href;
   if (lgLogo && !/ESPN-icon/i.test(lgLogo)) LEAGUE_LOGO[league.id] = lgLogo;
   if (league.sport === 'tennis') return (data.events || []).flatMap((e) => normalizeTennis(e, league));
@@ -273,7 +274,7 @@ async function espnScoreboard(league, dateStr) {
 // ---------- MLB Stats API: LMB ----------
 async function lmbSchedule(league, from, to) {
   const url = `${MLB}/schedule?sportId=${league.sportId}&leagueId=${league.leagueId}&startDate=${from}&endDate=${to}&hydrate=linescore,probablePitcher`;
-  const data = await getJSON(url, 30_000);
+  const data = await getJSON(url, 4_000); // LMB en tiempo real
   const out = [];
   for (const d of data.dates || []) {
     for (const g of d.games || []) {
@@ -326,7 +327,8 @@ export async function getEvents(league, days = 3) {
   }
   const results = await Promise.allSettled(reqs);
   const seen = new Map();
-  for (const r of results) if (r.status === 'fulfilled') for (const e of r.value) seen.set(e.id, e);
+  // El marcador del día (el más fresco) va al final para que gane sobre las copias por fecha.
+  for (const r of [...results].reverse()) if (r.status === 'fulfilled') for (const e of r.value) seen.set(e.id, e);
   return [...seen.values()].sort((a, b) => new Date(a.date) - new Date(b.date));
 }
 
@@ -417,7 +419,7 @@ export async function getSummary(league, eventId) {
     return { lineups: [], stats: [], keyEvents: [], commentary: [], news: [], injuries: [], winProb: null, lastFive: [] };
   }
   if (league.source === 'mlbstats') {
-    const data = await getJSON(`https://statsapi.mlb.com/api/v1.1/game/${eventId}/feed/live`, 20_000);
+    const data = await getJSON(`https://statsapi.mlb.com/api/v1.1/game/${eventId}/feed/live`, 5_000);
     const box = data.liveData?.boxscore?.teams || {};
     const lineup = (side) => (box[side]?.battingOrder || []).map((pid) => {
       const p = box[side].players['ID' + pid];
@@ -436,7 +438,7 @@ export async function getSummary(league, eventId) {
       probablePitchers: { home: data.gameData?.probablePitchers?.home?.fullName, away: data.gameData?.probablePitchers?.away?.fullName },
     };
   }
-  const data = await getJSON(`${ESPN}/${league.path}/summary?event=${eventId}`, 10_000);
+  const data = await getJSON(`${ESPN}/${league.path}/summary?event=${eventId}`, 4_000);
   const lineups = (data.rosters || []).map((r) => ({
     team: r.team?.displayName, teamId: String(r.team?.id), homeAway: r.homeAway, formation: r.formation || '',
     players: (r.roster || []).map((p) => ({

@@ -8,7 +8,7 @@
 param([int]$Port = 8787)
 
 # Versión del servidor: la app la compara con la de la página para avisar si hace falta reiniciarlo.
-$SERVER_VERSION = '1.7.0'
+$SERVER_VERSION = '1.7.1'
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -31,7 +31,7 @@ if (-not (Test-Path $tokenPath)) {
 }
 $token = ([IO.File]::ReadAllText($tokenPath)).Trim()
 
-$proxyHosts = @('news.google.com', 'liquipedia.net', 'api.elections.kalshi.com', 'data-api.polymarket.com')
+$proxyHosts = @('news.google.com', 'liquipedia.net', 'api.elections.kalshi.com', 'data-api.polymarket.com', 'api.bo3.gg')
 # Liquipedia pide: gzip, User-Agent identificable y maximo 1 consulta "parse" cada 30 s.
 $proxyCache = @{}
 $imgCache = @{}
@@ -256,7 +256,8 @@ try {
         if ($proxyHosts -notcontains $target.Host) { Send-Text $ctx '{"error":"host no permitido"}' 'application/json' 403; continue }
         $key = $target.AbsoluteUri
         $isLp = $target.Host -eq 'liquipedia.net'
-        $ttl = if ($isLp) { 60 } elseif ($target.Host -eq 'api.elections.kalshi.com') { 20 } else { 60 }
+        # Tiempo real: marcadores de eSports (bo3.gg) 4 s, precios de Kalshi 8 s; Liquipedia y lo demas, 60 s / 30 s.
+        $ttl = if ($isLp) { 60 } elseif ($target.Host -eq 'api.bo3.gg') { 4 } elseif ($target.Host -eq 'api.elections.kalshi.com') { 8 } else { 30 }
         $hit = $proxyCache[$key]
         if ($hit -and ((Get-Date) - $hit.t).TotalSeconds -lt $ttl) { Send-Text $ctx $hit.v 'text/plain; charset=utf-8'; continue }
         if ($isLp) {

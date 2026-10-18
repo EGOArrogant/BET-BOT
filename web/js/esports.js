@@ -17,7 +17,7 @@ const teamId = (game, name) => `${game}:${String(name || '').toLowerCase().repla
 
 // ---------- League of Legends ----------
 async function lolEvents(league) {
-  const data = await cached('lol', 20_000, async () => {
+  const data = await cached('lol', 4_000, async () => { // tiempo real (~5 s)
     const res = await fetch(`${LOL_API}/getSchedule?hl=es-MX`, { headers: { 'x-api-key': LOL_KEY } });
     if (!res.ok) throw new Error('LoL Esports HTTP ' + res.status);
     return res.json();
@@ -97,7 +97,76 @@ async function liquipediaEvents(league) {
       clock: '', period: 0, home: h, away: a, odds: null, bestOf, tournament: tour, round: `Bo${bestOf}`, venue: tour,
     });
   }
-  return [...out.values()];
+  const events = [...out.values()];
+  try { await applyBo3(league.game, events); } catch (e) { console.warn('bo3.gg', e); }
+  return events;
+}
+
+// ---------- Marcador en vivo de CS2 y Valorant (bo3.gg, cada ~5 s) ----------
+// Liquipedia solo se puede consultar cada 30–60 s y depende de que alguien edite la página;
+// bo3.gg publica el resultado de cada mapa en cuanto termina, así que corrige estado, marcador y mapas.
+const BO3 = 'https://api.bo3.gg/api/v1/matches';
+const BO3_DISC = { cs2: 1, valorant: 2 };
+async function bo3Matches(game) {
+  const d = BO3_DISC[game];
+  if (!d) return [];
+  return cached('bo3:' + game, 4_000, async () => {
+    // Hora redondeada: la URL no cambia en cada consulta (el servidor y bo3.gg la pueden reutilizar).
+    const since = new Date(Math.floor((Date.now() - 18 * 3600_000) / 3600_000) * 3600_000).toISOString();
+    const url = `${BO3}?filter[matches.discipline_id][eq]=${d}&filter[matches.status][in]=current,finished&filter[matches.start_date][gte]=${since}&page[limit]=100&with=teams,games&sort=-start_date`;
+    const res = await fetch('/api/proxy?url=' + encodeURIComponent(url));
+    if (!res.ok) throw new Error('bo3.gg HTTP ' + res.status);
+    return JSON.parse(await res.text()).results || [];
+  });
+}
+
+const normTeam = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/\b(team|esports?|gaming|club|academy)\b/g, '').replace(/[^a-z0-9]/g, '');
+const sameTeam = (a, b) => {
+  const x = normTeam(a), y = normTeam(b);
+  return !!x && !!y && (x === y || (Math.min(x.length, y.length) >= 3 && (x.includes(y) || y.includes(x))));
+};
+const mapName = (m) => { const n = String(m || '').replace(/^de_/, ''); return n ? n[0].toUpperCase() + n.slice(1) : ''; };
+
+export async function applyBo3(game, events) {
+  const live = events.filter((e) => e.state !== 'post' && new Date(e.date).getTime() < Date.now() + 15 * 60_000);
+  if (!live.length) return;
+  const matches = await bo3Matches(game);
+  for (const ev of live) {
+    const t = new Date(ev.date).getTime();
+    let swap = false;
+    const m = matches.find((x) => {
+      if (Math.abs(new Date(x.start_date).getTime() - t) > 8 * 3600_000) return false;
+      if (sameTeam(ev.home.name, x.team1?.name) && sameTeam(ev.away.name, x.team2?.name)) { swap = false; return true; }
+      if (sameTeam(ev.home.name, x.team2?.name) && sameTeam(ev.away.name, x.team1?.name)) { swap = true; return true; }
+      return false;
+    });
+    if (!m) continue;
+    const homeId = swap ? m.team2_id : m.team1_id;
+    const hs = swap ? m.team2_score : m.team1_score, as = swap ? m.team1_score : m.team2_score;
+    // Mapa por mapa, desde el lado del equipo local.
+    ev.maps = (m.games || []).slice().sort((x, y) => x.number - y.number).map((g) => {
+      const homeWon = g.winner_team_clan?.team_id === homeId || g.winner_team_clan?.team?.id === homeId;
+      const done = g.status === 'finished' && g.winner_clan_score != null;
+      return {
+        n: g.number, map: mapName(g.map_name), status: done ? 'done' : g.status === 'current' ? 'live' : 'next',
+        home: done ? (homeWon ? g.winner_clan_score : g.loser_clan_score) : null,
+        away: done ? (homeWon ? g.loser_clan_score : g.winner_clan_score) : null,
+        winner: done ? (homeWon ? 'home' : 'away') : null,
+      };
+    });
+    ev.home.score = hs ?? 0; ev.away.score = as ?? 0;
+    ev.liveSource = 'bo3.gg';
+    if (m.status === 'finished') {
+      const homeWin = m.winner_team_id != null ? m.winner_team_id === homeId : hs > as;
+      ev.state = 'post'; ev.completed = true; ev.detail = 'Final';
+      ev.home.winner = homeWin; ev.away.winner = !homeWin;
+    } else if (m.status === 'current') {
+      const cur = ev.maps.find((x) => x.status === 'live') || ev.maps.find((x) => x.status === 'next');
+      ev.state = 'in';
+      ev.detail = `En vivo · ${hs ?? 0}-${as ?? 0}${cur ? ` · Mapa ${cur.n}${cur.map ? ' (' + cur.map + ')' : ''}` : ''}`;
+    }
+  }
 }
 
 export async function getEsportsEvents(league) {

@@ -1,8 +1,11 @@
 {
-  "version": "1.7.0",
+  "version": "1.7.1",
   "date": "2026-10-18",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Tiempo real: lo que está en vivo se actualiza cada 5 s (antes 15 s), y el partido abierto también cada 5 s",
+    "CS2 y Valorant: marcador mapa por mapa y mapa en juego desde bo3.gg; los partidos terminados ya no se quedan como \"En vivo 0-0\"",
+    "LoL, ESPN (fútbol, NFL, NBA, MLB, tenis, UFC), LMB y precios de Polymarket/Kalshi con datos de hace ~5–8 s",
     "Arreglado \"Polymarket HTTP 403\": el servidor ahora se reinicia solo al actualizar, y si sigue con la versión vieja aparece un botón ↻ Reiniciar servidor",
     "Nueva pestaña 🧠 Dinero inteligente en cada partido y pelea con mercado en Polymarket: los mayores apostadores de cada lado con su win rate, ganancia de 90 días, lugar en el ranking y enlace a su perfil",
     "Los sharps (20+ apuestas, win rate ≥55% y con ganancia) se marcan, y el bot dice de qué lado está cargado el dinero inteligente",
