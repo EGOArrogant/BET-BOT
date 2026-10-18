@@ -340,6 +340,22 @@ function renderChrome() {
   $('#slip-fab-count').textContent = slipN;
 }
 
+// Tablas adaptables: en celular cada fila se convierte en tarjeta "etiqueta: valor" (ver .rtable en el CSS).
+// Las tablas de posiciones (.keep) se quedan como tabla con desplazamiento horizontal.
+function labelTables(root) {
+  for (const table of root.querySelectorAll('table.t:not(.keep):not(.rtable)')) {
+    const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+    table.classList.add('rtable');
+    for (const tr of table.querySelectorAll('tbody tr')) {
+      [...tr.children].forEach((td, i) => {
+        if (i === 0) td.classList.add('cell-main');
+        else if (heads[i]) td.dataset.label = heads[i];
+        else td.classList.add('cell-actions');
+      });
+    }
+  }
+}
+
 // No se re-pinta mientras escribes en un campo (para no perder lo que tecleas).
 const typingInView = () => { const a = document.activeElement; return a && $('#view').contains(a) && /INPUT|TEXTAREA|SELECT/.test(a.tagName); };
 
@@ -350,6 +366,7 @@ function render() {
   const v = $('#view');
   const views = { home: viewHome, soccer: () => viewSection('soccer'), sports: () => viewSection('sports'), esports: () => viewSection('esports'), bet: viewBet, gold: viewGold, bank: viewBank, news: viewNews, more: viewMore };
   v.innerHTML = views[S.tab]();
+  labelTables(v);
   if (S.tab === 'home' || S.tab === 'bank') drawEquity();
   if (S.tab === 'news') loadNews();
   if (S.tab === 'more' && S.moreTab === 'tables') loadTables();
@@ -543,17 +560,56 @@ function viewGold() {
 }
 
 // ---------- Banca ----------
+// Estado visual de cada apuesta: el contorno de la tarjeta cambia de color para distinguirla de un vistazo.
+const BET_STATE = {
+  open: { cls: 'bc-open', icon: '⏳', text: 'Abierta' },
+  live: { cls: 'bc-live', icon: '●', text: 'En vivo' },
+  cash: { cls: 'bc-cashnow', icon: '💸', text: 'Conviene cobrar' },
+  won: { cls: 'bc-won', icon: '✅', text: 'Ganada' },
+  lost: { cls: 'bc-lost', icon: '❌', text: 'Perdida' },
+  cashout: { cls: 'bc-cashed', icon: '💰', text: 'Cobrada antes' },
+  void: { cls: 'bc-void', icon: '↩️', text: 'Anulada' },
+};
+
+// ¿Conviene cobrar anticipadamente? Solo en vivo, cuando va ganando y aún no es casi segura.
+const cashOutSuggested = (c) => !!c && c.live && c.profit > 0 && c.p < 0.85;
+
+function betStateKey(b, c) {
+  if (b.status !== 'pending') return b.status;
+  if (cashOutSuggested(c)) return 'cash';
+  return c?.live ? 'live' : 'open';
+}
+
+function betCard(b, { compact = false } = {}) {
+  const c = b.status === 'pending' ? cashOutInfo(b) : null;
+  const k = betStateKey(b, c);
+  const s = BET_STATE[k];
+  const bk = K.bookById(b.book);
+  const lg = D.leagueById(b.leagueId);
+  const result = b.status === 'won' ? `<b class="up">+${money(b.payout - b.stake)}</b>`
+    : b.status === 'lost' ? `<b class="down">−${money(b.stake)}</b>`
+    : b.status === 'cashout' ? `<b class="${b.payout >= b.stake ? 'up' : 'down'}">${signed(b.payout - b.stake)}</b>`
+    : b.status === 'void' ? '<b>$0.00</b>' : `<b>${money(b.stake * b.odds)}</b>`;
+  const resultLabel = b.status === 'pending' ? 'Cobro si gana' : b.status === 'void' ? 'Devuelto' : 'Resultado';
+  const live = c?.live ? `<span class="down"> · ${esc(c.a.ev.detail || 'en vivo')} · ${c.a.ev.home.score ?? 0}-${c.a.ev.away.score ?? 0}</span>` : '';
+  const cashBlock = c && !compact ? `<div class="bet-cash ${cashOutSuggested(c) ? 'hot' : ''}">
+      <div class="opp-nums"><div>Prob. actual<b>${pct(c.p)}</b></div><div>Valor justo hoy<b>${money(c.fair)}</b></div><div>Mínimo aceptable<b>${money(c.fair * 0.95)}</b></div></div>
+      <div class="note">${cashOutSuggested(c) ? '💸 Va ganando: si tu casa te ofrece el mínimo aceptable o más, cobrar asegura la ganancia.' : c.live && c.p < 0.25 ? 'Va perdiendo: si te ofrecen algo cercano al valor justo, recuperar parte puede tener sentido.' : c.p >= 0.85 ? 'Muy probable que gane: mantenerla suele valer más que cobrar.' : 'Sin cambios importantes: normalmente conviene mantenerla.'}${bk ? ` · ${esc(bk.name)} ${bk.cashout === true ? 'ofrece cash out' : '(cash out por verificar)'}` : ''}</div></div>` : '';
+  return `<div class="bet-card glass ${s.cls}">
+    <div class="bet-top"><span class="bet-state">${s.icon} ${s.text}</span><span class="note">${esc(SOURCE_LABEL[b.source] || b.source)} · ${esc(lg?.short || '')} · ${new Date(b.placedAt).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}</span></div>
+    <div class="bet-title">${esc(b.label)} <span class="note">· ${esc(b.market)}</span></div>
+    <div class="note">${esc(b.home)} vs ${esc(b.away)}${b.finalScore ? ` · final ${esc(b.finalScore)}` : ''}${live}</div>
+    <div class="bet-nums"><div><span>Monto</span><b>${money(b.stake)}</b></div><div><span>Momio</span><b>${dec(b.odds)}</b></div><div><span>${resultLabel}</span>${result}</div></div>
+    ${cashBlock}
+    ${b.status === 'pending' && !compact ? `<div class="bet-actions">${bk ? `<span class="tag" style="background:${bk.color};color:#fff">${esc(bk.name)}</span>` : ''}${b.placedReal ? '<span class="tag value">Colocada</span>' : ''}<span class="spacer"></span>
+      ${c ? `<button class="btn small ${cashOutSuggested(c) ? 'gold' : ''}" data-cashout="${b.id}" data-amount="${(c.fair * 0.95).toFixed(2)}">Cobrar ${money(c.fair * 0.95)}</button>` : ''}
+      <button class="btn small" data-mx="${b.id}">Momio real</button><button class="btn small danger" data-cancel="${b.id}">Anular</button></div>` : ''}
+  </div>`;
+}
+
+// Compatibilidad: donde antes había tabla de apuestas ahora hay tarjetas.
 function betsTable(bets, compact = false) {
-  const st = (b) => ({ pending: '<span class="tag bet">Pendiente</span>', won: '<span class="tag value">Ganada</span>', lost: '<span class="tag live">Perdida</span>', void: '<span class="tag">Anulada</span>', cashout: '<span class="tag gold">Cobrada antes</span>' }[b.status]);
-  const casa = (b) => { const k = K.bookById(b.book); return k ? `<span class="tag" style="background:${k.color};color:#fff">${esc(k.name)}</span>` : '<span class="note">—</span>'; };
-  return `<div class="table-wrap"><table class="t"><thead><tr><th>Partido</th><th>Selección</th><th>Casa</th><th class="num">Momio</th><th class="num">Monto</th>${compact ? '' : '<th class="num">EV</th><th>Fuente</th><th class="num">Resultado</th>'}<th></th></tr></thead><tbody>
-  ${bets.map((b) => `<tr><td class="wrap"><b>${esc(b.home)}</b> vs ${esc(b.away)}<div class="note">${D.leagueById(b.leagueId)?.short || ''} · ${new Date(b.placedAt).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}${b.live ? ' · en vivo ' + esc(b.scoreAtBet) : ''}</div></td>
-    <td class="wrap">${esc(b.label)}<div class="note">${esc(b.market)}</div></td><td>${casa(b)}</td>
-    <td class="num">${dec(b.odds)}${b.oddsMx ? '<div class="note">MX</div>' : '<div class="note">ref.</div>'}</td>
-    <td class="num">${money(b.stake)}</td>
-    ${compact ? '' : `<td class="num">${pct(b.ev, 1)}</td><td>${esc(SOURCE_LABEL[b.source] || b.source)}</td><td class="num">${b.status === 'won' ? `<b class="up">+${money(b.payout - b.stake)}</b>` : b.status === 'lost' ? `<b class="down">−${money(b.stake)}</b>` : b.status === 'cashout' ? `<b class="${b.payout >= b.stake ? 'up' : 'down'}">${signed(b.payout - b.stake)}</b>` : ''}${b.finalScore ? `<div class="note">${esc(b.finalScore)}</div>` : ''}</td>`}
-    <td>${b.status === 'pending' ? `${b.placedReal ? '<span class="tag value">Colocada</span> ' : ''}<button class="btn small" data-mx="${b.id}">Momio real</button> <button class="btn small danger" data-cancel="${b.id}">Anular</button>` : st(b)}</td></tr>`).join('')}
-  </tbody></table></div>`;
+  return `<div class="bet-grid">${bets.map((b) => betCard(b, { compact })).join('')}</div>`;
 }
 
 // ¿Quién hizo la apuesta? El bot (piloto automático) o tú (manual), con o sin IA.
@@ -563,10 +619,13 @@ const SOURCE_LABEL = { modelo: '🤖 Bot', IA: '🤖 Bot + IA', 'práctica': '�
 function myBetsSection() {
   const st = B.getState();
   const bySource = st.bets.filter((b) => (S.betSource === 'bot' ? isBotBet(b) : S.betSource === 'manual' ? !isBotBet(b) : true));
+  const pend = bySource.filter((b) => b.status === 'pending');
   const groups = {
-    pending: bySource.filter((b) => b.status === 'pending'),
+    pending: pend,
+    cash: pend.filter((b) => cashOutSuggested(cashOutInfo(b))),
     won: bySource.filter((b) => b.status === 'won'),
     lost: bySource.filter((b) => b.status === 'lost'),
+    cashout: bySource.filter((b) => b.status === 'cashout'),
     all: bySource,
   };
   const tab = groups[S.bankTab] ? S.bankTab : 'pending';
@@ -574,19 +633,25 @@ function myBetsSection() {
   const staked = list.reduce((a, b) => a + b.stake, 0);
   const net = list.reduce((a, b) => a + (b.status === 'won' || b.status === 'cashout' ? b.payout - b.stake : b.status === 'lost' ? -b.stake : 0), 0);
   const summary = {
-    pending: `${list.length} en juego · ${money(staked)} apostados · si todas ganan cobras ${money(list.reduce((a, b) => a + b.stake * b.odds, 0))}`,
-    won: `${list.length} ganadas · apostaste ${money(staked)} · ganancia <b class="up">+${money(net)}</b>`,
+    pending: `${list.length} abiertas · ${money(staked)} apostados · si todas ganan cobras ${money(list.reduce((a, b) => a + b.stake * b.odds, 0))}`,
+    cash: `${list.length} apuestas van ganando en vivo: revisa si tu casa ofrece cobrarlas por el mínimo aceptable o más`,
+    won: `${list.length} ganadas · ganancia <b class="up">+${money(net)}</b>`,
     lost: `${list.length} perdidas · <b class="down">−${money(-net)}</b>`,
+    cashout: `${list.length} cobradas antes de terminar · resultado <b class="${net >= 0 ? 'up' : 'down'}">${signed(net)}</b>`,
     all: `${list.length} apuestas · resultado neto <b class="${net >= 0 ? 'up' : 'down'}">${signed(net)}</b>`,
   }[tab];
-  const tabs = [['pending', '⏳ En juego'], ['won', '✅ Ganadas'], ['lost', '❌ Perdidas'], ['all', 'Todas']];
+  const tabs = [['pending', '⏳ Abiertas'], ['cash', '💸 Para cobrar'], ['won', '✅ Ganadas'], ['lost', '❌ Perdidas'], ['cashout', '💰 Cobradas'], ['all', 'Todas']];
   const sources = [['all', 'Todas'], ['bot', '🤖 Del bot'], ['manual', '👤 Mías']];
-  const sorted = [...list].sort((a, b) => (b.settledAt || b.placedAt) - (a.settledAt || a.placedAt));
+  // Abiertas: primero las que conviene cobrar y las en vivo; cerradas: las más recientes primero.
+  const rank = (b) => ({ cash: 0, live: 1, open: 2 }[betStateKey(b, b.status === 'pending' ? cashOutInfo(b) : null)] ?? 3);
+  const sorted = [...list].sort((a, b) => rank(a) - rank(b) || (b.settledAt || b.placedAt) - (a.settledAt || a.placedAt));
+  const empty = { pending: 'No hay apuestas abiertas ahora.', cash: 'Ninguna apuesta va ganando en vivo en este momento.', won: 'Todavía no hay apuestas ganadas.', lost: 'Todavía no hay apuestas perdidas.', cashout: 'No has cobrado ninguna apuesta antes de tiempo.', all: 'Todavía no hay apuestas.' }[tab];
   return `<div class="section-title">Mis apuestas <small>Con dinero ficticio</small></div>
-  <div class="flex tabs-inline"><div class="segmented">${tabs.map(([k, l]) => `<button data-banktab="${k}" class="${tab === k ? 'active' : ''}">${l} (${groups[k].length})</button>`).join('')}</div>
-    <div class="segmented">${sources.map(([k, l]) => `<button data-betsource="${k}" class="${S.betSource === k ? 'active' : ''}">${l}</button>`).join('')}</div></div>
-  <div class="widget glass"><div class="note" style="margin-bottom:8px">${summary}</div>
-    ${sorted.length ? betsTable(sorted) : `<div class="empty">${{ pending: 'No hay apuestas en juego ahora.', won: 'Todavía no hay apuestas ganadas.', lost: 'Todavía no hay apuestas perdidas.', all: 'Todavía no hay apuestas.' }[tab]}${S.betSource === 'bot' ? '<br>Activa el piloto automático en Inicio para que el bot opere solo.' : ''}</div>`}</div>`;
+  <div class="segmented seg-full tabs-inline">${tabs.map(([k, l]) => `<button data-banktab="${k}" class="${tab === k ? 'active' : ''}">${l} <span class="seg-n">${groups[k].length}</span></button>`).join('')}</div>
+  <div class="flex" style="margin:-6px 0 12px"><div class="segmented">${sources.map(([k, l]) => `<button data-betsource="${k}" class="${S.betSource === k ? 'active' : ''}">${l}</button>`).join('')}</div></div>
+  <div class="bet-legend">${['open', 'live', 'cash', 'won', 'lost', 'cashout', 'void'].map((k) => `<span class="lg ${BET_STATE[k].cls}">${BET_STATE[k].text}</span>`).join('')}</div>
+  <div class="note" style="margin:8px 4px 10px">${summary}</div>
+  ${sorted.length ? betsTable(sorted) : `<div class="widget glass empty">${empty}${S.betSource === 'bot' ? '<br>Activa el piloto automático en Inicio para que el bot opere solo.' : ''}</div>`}`;
 }
 
 function viewBank() {
@@ -635,7 +700,7 @@ function drawEquity() {
   if (!el) return;
   const st = B.getState();
   const pts = [...st.history, { t: Date.now(), bankroll: B.equityNow() }];
-  const W = Math.max(el.clientWidth, 300), H = 200, P = { l: 56, r: 12, t: 12, b: 26 };
+  const W = Math.max(el.clientWidth, 280), H = window.innerWidth < 640 ? 170 : 200, P = { l: 56, r: 12, t: 12, b: 26 };
   const xs = pts.map((p) => p.t), ys = pts.map((p) => p.bankroll).concat([st.startBankroll]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs) || x0 + 1;
   let y0 = Math.min(...ys), y1 = Math.max(...ys);
@@ -708,7 +773,7 @@ async function loadTables() {
   if (lg.sport === 'esports') {
     const box = $('#tables-box');
     const rows = Object.values(B.getState().elo?.[lg.game] || {}).sort((a, b) => b.elo - a.elo);
-    if (box) box.innerHTML = `<div class="widget glass mt"><h3>Ranking Elo del bot · ${esc(lg.name)}</h3>${rows.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>#</th><th>Equipo</th><th class="num">Elo</th><th class="num">Mapas</th><th class="num">Series</th></tr></thead><tbody>
+    if (box) box.innerHTML = `<div class="widget glass mt"><h3>Ranking Elo del bot · ${esc(lg.name)}</h3>${rows.length ? `<div class="table-wrap"><table class="t keep"><thead><tr><th>#</th><th>Equipo</th><th class="num">Elo</th><th class="num">Mapas</th><th class="num">Series</th></tr></thead><tbody>
       ${rows.slice(0, 100).map((r, i) => `<tr><td>${i + 1}</td><td>${esc(r.name)}</td><td class="num"><b>${Math.round(r.elo)}</b></td><td class="num">${r.maps}</td><td class="num">${r.series}</td></tr>`).join('')}</tbody></table></div>`
       : '<div class="empty">El bot todavía no observa resultados de este juego. El ranking se construye solo con cada serie terminada.</div>'}
       <div class="note mt">Cada equipo empieza en 1500. Ganar un mapa a un rival fuerte sube más el Elo. Entre más resultados observe el bot, más confiable es.</div></div>`;
@@ -720,7 +785,7 @@ async function loadTables() {
   if (!box || S.moreTab !== 'tables') return;
   if (!groups.length) { box.innerHTML = '<div class="widget glass empty">Tabla no disponible</div>'; return; }
   const isTennis = lg.sport === 'tennis', isSoccer = lg.sport === 'soccer';
-  box.innerHTML = groups.map((g) => `<div class="widget glass mt"><h3>${esc(g.group)}</h3><div class="table-wrap"><table class="t"><thead><tr><th>#</th><th>${isTennis ? 'Jugador' : 'Equipo'}</th>
+  box.innerHTML = groups.map((g) => `<div class="widget glass mt"><h3>${esc(g.group)}</h3><div class="table-wrap"><table class="t keep"><thead><tr><th>#</th><th>${isTennis ? 'Jugador' : 'Equipo'}</th>
     ${isTennis ? '<th class="num">Puntos</th>' : `<th class="num">PJ</th><th class="num">G</th>${isSoccer ? '<th class="num">E</th>' : ''}<th class="num">P</th><th class="num">${isSoccer ? 'GF' : 'PF'}</th><th class="num">${isSoccer ? 'GC' : 'PC'}</th><th class="num">${isSoccer ? 'Pts' : '%'}</th>`}</tr></thead><tbody>
     ${g.rows.slice(0, isTennis ? 100 : 40).map((r, i) => `<tr><td>${r.rank || i + 1}</td><td>${r.logo ? `<img src="${esc(r.logo)}" alt="" width="18" height="18" style="vertical-align:-4px;margin-right:6px;object-fit:contain" loading="lazy" onerror="this.remove()">` : ''}${esc(r.name)}</td>
       ${isTennis ? `<td class="num">${Number(r.pts || 0).toLocaleString('es-MX')}</td>` : `<td class="num">${r.gp}</td><td class="num">${r.w}</td>${isSoccer ? `<td class="num">${r.d}</td>` : ''}<td class="num">${r.l}</td><td class="num">${r.pf}</td><td class="num">${r.pa}</td><td class="num"><b>${isSoccer ? r.pts ?? '' : r.pct != null ? Number(r.pct).toFixed(3) : ''}</b></td>`}</tr>`).join('')}
@@ -816,6 +881,7 @@ function renderSheet() {
   $('#sheet-body').innerHTML = `<div class="scoreboard">${team(ev.home)}<div><div class="big">${esc(big)}</div><div class="st">${status}</div>${ev.sport === 'tennis' && ev.state !== 'pre' ? `<div class="note">${ev.home.linescores.join(' ')}<br>${ev.away.linescores.join(' ')}</div>` : ''}</div>${team(ev.away)}</div>
     <div class="segmented tabs-inline">${tabs.map(([k, l]) => `<button data-stab="${k}" class="${S.sheetTab === k ? 'active' : ''}">${l}</button>`).join('')}</div>
     <div id="stab-body">${sheetTab(a, sum)}</div>`;
+  labelTables($('#sheet-body'));
   if (S.sheetTab === 'news') loadMatchNews(a);
 }
 
@@ -1112,27 +1178,15 @@ function cashOutInfo(b) {
 }
 
 function cashOutSection() {
-  const rows = B.pendingBets().map((b) => ({ b, c: cashOutInfo(b) })).filter((x) => x.c);
-  if (!rows.length) return '';
-  rows.sort((x, y) => (y.c.live - x.c.live) || (y.c.profit - x.c.profit));
-  return `<div class="section-title">💸 Cobro anticipado (cash out) <small>Cuánto vale hoy cada apuesta en juego</small></div>
-  <div class="list glass">${rows.map(({ b, c }) => {
-    const bk = K.bookById(b.book);
-    const good = c.fair * 0.95;
-    const adv = c.p >= 0.85 ? 'Muy probable que gane: mantenerla suele valer más que cobrar.'
-      : c.profit > 0 && c.live ? 'Va ganando. Si tu casa ofrece al menos el "mínimo aceptable", cobrar asegura ganancia sin regalar valor.'
-      : c.p < 0.25 && c.live ? 'Va perdiendo. Si te ofrecen algo cercano al valor justo, recuperar parte puede tener sentido.'
-      : 'Sin cambios importantes: normalmente conviene mantenerla.';
-    return `<div class="row" style="flex-wrap:wrap"><div class="icon-sq" style="background:${c.live ? 'var(--red-fill)' : 'var(--blue)'}">${c.live ? '●' : '⏳'}</div>
-      <div class="grow" style="min-width:220px"><b>${esc(b.label)}</b> <span class="note">· ${esc(b.home)} vs ${esc(b.away)}${c.live ? ' · <span class="down">EN VIVO ' + esc(c.a.ev.detail || '') + '</span>' : ''}</span>
-        <div class="meta">Apostaste ${money(b.stake)} @ ${dec(b.odds)} (cobro total ${money(c.full)}) · prob. actual ${pct(c.p)} · ${bk ? `${esc(bk.name)}: ${bk.cashout === true ? 'ofrece cash out' : 'cash out por verificar'}` : 'sin casa asignada'}</div>
-        <div class="meta">${esc(adv)}</div></div>
-      <div class="opp-nums"><div>Valor justo<b>${money(c.fair)}</b></div><div>Mínimo aceptable<b>${money(good)}</b></div></div>
-      <button class="btn small" data-cashout="${b.id}" data-amount="${good.toFixed(2)}" title="Simula cobrar ahora por el mínimo aceptable">Cobrar (simulado)</button></div>`;
-  }).join('')}</div>
-  <div class="note mt">Si tu casa te ofrece por la apuesta <b>al menos el "mínimo aceptable"</b>, cobrar es razonable. Si ofrece menos, te está cobrando una comisión alta. El retiro del dinero a tu banco depende de cada casa: revisa sus métodos (SPEI, OXXO, tarjeta) en su app.</div>`;
+  const pend = B.pendingBets().map((b) => ({ b, c: cashOutInfo(b) })).filter((x) => x.c);
+  if (!pend.length) return '';
+  const hot = pend.filter((x) => cashOutSuggested(x.c));
+  // Primero las que conviene cobrar, luego en vivo, luego el resto.
+  pend.sort((x, y) => (cashOutSuggested(y.c) - cashOutSuggested(x.c)) || (y.c.live - x.c.live) || (y.c.profit - x.c.profit));
+  return `<div class="section-title">💸 Cobro anticipado (cash out) <small>${hot.length ? `<b class="gold-text">${hot.length} conviene${hot.length === 1 ? '' : 'n'} cobrar</b>` : 'Cuánto vale hoy cada apuesta abierta'}</small></div>
+  ${betsTable(pend.map((x) => x.b))}
+  <div class="note mt">Si tu casa te ofrece por la apuesta <b>al menos el "mínimo aceptable"</b>, cobrar es razonable; si ofrece menos, te está cobrando una comisión alta. El retiro a tu banco depende de cada casa (SPEI, OXXO, tarjeta).</div>`;
 }
-
 function viewBet() {
   const st = B.getState();
   const toPlace = B.pendingBets().filter((b) => !b.placedReal && b.source !== 'práctica');
