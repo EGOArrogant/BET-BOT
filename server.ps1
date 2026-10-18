@@ -324,7 +324,8 @@ try {
         foreach ($f in 'server.ps1', 'iniciar.bat', 'habilitar-telefono.bat', 'LEEME.md', '.env.example') {
           if (Test-Path (Join-Path $src $f)) { Copy-Item (Join-Path $src $f) $root -Force }
         }
-        $serverChanged = ([IO.File]::ReadAllText((Join-Path $root 'server.ps1')) -ne $oldServer)
+        # Se compara sin fines de línea (CRLF/LF) para no pedir reinicio si solo cambió el formato.
+        $serverChanged = (([IO.File]::ReadAllText((Join-Path $root 'server.ps1')) -replace "`r", '') -ne ($oldServer -replace "`r", ''))
         Remove-Item -Recurse -Force $tmp; Remove-Item -Force $zipPath
         Send-Text $ctx (@{ ok = $true; version = [string]$manifest.version; serverChanged = $serverChanged } | ConvertTo-Json -Compress)
       }
