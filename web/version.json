@@ -1,0 +1,14 @@
+{
+  "version": "1.1.0",
+  "date": "2026-10-17",
+  "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
+  "notes": [
+    "Rediseño con barra lateral; todas las ligas visibles sin desplazamiento horizontal",
+    "Sección Apostar con boleto visible y comparación de momios por casa",
+    "La IA busca en internet los momios publicados por cada casa",
+    "Casas internacionales (sin permiso SEGOB) en un grupo aparte",
+    "Acceso desde el celular con código QR",
+    "Panel de notificaciones con noticias de tus equipos",
+    "Claves desde Ajustes (se guardan solo en la PC) y botón de actualizaciones conectado a GitHub"
+  ]
+}

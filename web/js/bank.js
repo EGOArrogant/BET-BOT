@@ -1,0 +1,341 @@
+// Banca ficticia: estado persistente, tamaño de apuesta (Kelly fraccionado), liquidación,
+// CLV y aprendizaje (ajuste del peso del modelo frente al mercado según su precisión real).
+
+import { brier } from './models.js';
+import { DEFAULT_BOOKS, recordQuote } from './books.js';
+
+export const DEFAULT_STATE = () => ({
+  version: 1,
+  startBankroll: 2000,
+  bankroll: 2000,
+  bets: [],
+  predictions: {},
+  weights: { soccer: 0.35, football: 0.3, basketball: 0.3, baseball: 0.3, tennis: 0.5, esports: 0.5 },
+  settings: {
+    kellyFraction: 0.25, // Kelly al 25%: crecimiento sólido con mucha menos volatilidad
+    maxStakePct: 0.03,   // nunca más del 3% de la banca en una apuesta
+    minStake: 10,
+    minEV: 0.03,         // valor esperado mínimo del 3%
+    minOdds: 1.4,
+    maxOdds: 10,
+    maxBetsPerDay: 8,
+    autopilot: false,
+    aiConfirm: false,
+    scanMinutes: 3,
+  },
+  history: [{ t: Date.now(), bankroll: 2000 }],
+  log: [],
+  books: DEFAULT_BOOKS(),
+  bookQuotes: [],
+  slip: [], // boleto: selecciones por apostar (compartido entre PC y celular)
+});
+
+let state = DEFAULT_STATE();
+let saveTimer = null;
+let rev = 0; // versión del estado en el servidor (para sincronizar varios dispositivos)
+const listeners = new Set();
+const conflictListeners = new Set();
+
+export const getState = () => state;
+export const onChange = (fn) => listeners.add(fn);
+export const onConflict = (fn) => conflictListeners.add(fn);
+const emit = () => listeners.forEach((fn) => fn(state));
+
+// Identificador de este dispositivo: solo uno corre el piloto automático a la vez.
+export const deviceId = (() => {
+  try {
+    let id = localStorage.getItem('betbot-device');
+    if (!id) { id = 'd' + Math.random().toString(36).slice(2, 10); localStorage.setItem('betbot-device', id); }
+    return id;
+  } catch { return 'd-sin-almacenamiento'; }
+})();
+export const isAutopilotHere = () => state.settings.autopilot && state.settings.autopilotDevice === deviceId;
+
+export async function loadState() {
+  try {
+    const res = await fetch('/api/state');
+    rev = Number(res.headers.get('X-Rev') || 0);
+    const remote = await res.json();
+    if (remote && remote.version) state = merge(DEFAULT_STATE(), remote);
+  } catch {
+    try { const local = JSON.parse(localStorage.getItem('betbot-state')); if (local) state = merge(DEFAULT_STATE(), local); } catch {}
+  }
+  emit();
+  return state;
+}
+
+// Trae cambios hechos desde otro dispositivo. Devuelve true si hubo cambios.
+export async function pullState() {
+  if (saveTimer) return false; // hay cambios locales por guardar
+  try {
+    const res = await fetch('/api/state');
+    const r = Number(res.headers.get('X-Rev') || 0);
+    if (r === rev) return false;
+    const remote = await res.json();
+    rev = r;
+    if (remote && remote.version) { state = merge(DEFAULT_STATE(), remote); emit(); return true; }
+  } catch {}
+  return false;
+}
+
+function merge(base, s) {
+  return {
+    ...base, ...s, settings: { ...base.settings, ...(s.settings || {}) }, weights: { ...base.weights, ...(s.weights || {}) },
+    books: { ...base.books, ...(s.books || {}) }, slip: Array.isArray(s.slip) ? s.slip : [],
+  };
+}
+
+export function updateBook(id, patch) {
+  state.books[id] = { ...(state.books[id] || {}), ...patch };
+  save();
+}
+
+export function save() {
+  emit();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    saveTimer = null;
+    const body = JSON.stringify(state);
+    try {
+      const res = await fetch('/api/state', { method: 'PUT', body, headers: { 'Content-Type': 'application/json', 'X-Base-Rev': String(rev) } });
+      if (res.status === 409) {
+        // Otro dispositivo guardó primero: se adopta su versión y se avisa.
+        rev = Number(res.headers.get('X-Rev') || rev);
+        const remote = await res.json();
+        if (remote && remote.version) state = merge(DEFAULT_STATE(), remote);
+        emit();
+        conflictListeners.forEach((fn) => fn());
+        return;
+      }
+      if (res.ok) rev = (await res.json()).rev ?? rev;
+    } catch { try { localStorage.setItem('betbot-state', body); } catch {} }
+  }, 400);
+}
+
+// ---------- boleto ----------
+export function addToSlip(item) {
+  if (state.slip.some((s) => s.eventId === item.eventId && s.pick === item.pick && s.market === item.market)) return false;
+  state.slip.push({ ...item, id: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), addedAt: Date.now(), quotes: item.quotes || {} });
+  save();
+  return true;
+}
+export function updateSlip(id, patch) {
+  const s = state.slip.find((x) => x.id === id);
+  if (s) { Object.assign(s, patch); save(); }
+}
+export function removeFromSlip(id) { state.slip = state.slip.filter((x) => x.id !== id); save(); }
+
+export function markPlacedReal(id, placed = true) {
+  const b = state.bets.find((x) => x.id === id);
+  if (b) { b.placedReal = placed; b.placedRealAt = placed ? Date.now() : null; save(); }
+}
+
+export function log(msg, kind = 'info') {
+  state.log.unshift({ t: Date.now(), msg, kind });
+  state.log = state.log.slice(0, 300);
+  save();
+}
+
+export function updateSettings(patch) { state.settings = { ...state.settings, ...patch }; save(); }
+
+export function resetBank(amount = 2000) {
+  const keep = { settings: state.settings, weights: state.weights, predictions: state.predictions, books: state.books, bookQuotes: state.bookQuotes, elo: state.elo, eloSeen: state.eloSeen };
+  state = { ...DEFAULT_STATE(), ...keep, startBankroll: amount, bankroll: amount, history: [{ t: Date.now(), bankroll: amount }] };
+  log(`Banca reiniciada a $${amount} MXN`);
+}
+
+// ---------- tamaño de apuesta ----------
+export function suggestStake(p, odds) {
+  const s = state.settings;
+  if (!odds || odds <= 1) return 0;
+  const k = (p * odds - 1) / (odds - 1);
+  if (k <= 0) return 0;
+  const raw = state.bankroll * k * s.kellyFraction;
+  const capped = Math.min(raw, state.bankroll * s.maxStakePct);
+  const rounded = Math.floor(capped / 5) * 5;
+  return rounded >= s.minStake ? rounded : (state.bankroll * k * s.kellyFraction >= s.minStake * 0.6 ? s.minStake : 0);
+}
+
+export const pendingBets = () => state.bets.filter((b) => b.status === 'pending');
+export const hasBetOn = (eventId) => state.bets.some((b) => b.eventId === eventId && b.status === 'pending');
+export const betsToday = () => {
+  const d = new Date().toDateString();
+  return state.bets.filter((b) => new Date(b.placedAt).toDateString() === d).length;
+};
+
+export function placeBet({ ev, sel, stake, odds, oddsMx = null, source = 'manual', reasoning = '', book = null, quotes = {} }) {
+  const finalOdds = Number(oddsMx || odds);
+  stake = Math.round(Number(stake));
+  if (!finalOdds || finalOdds <= 1) throw new Error('Momio inválido');
+  if (!stake || stake <= 0) throw new Error('Monto inválido');
+  if (stake > state.bankroll) throw new Error('Saldo insuficiente');
+  const bet = {
+    id: 'b' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    eventId: ev.id, leagueId: ev.leagueId, sport: ev.sport, eventName: ev.name, eventDate: ev.date,
+    home: ev.home.name, away: ev.away.name, live: ev.state === 'in',
+    scoreAtBet: ev.state === 'in' ? `${ev.home.score ?? 0}-${ev.away.score ?? 0}` : null,
+    market: sel.market, pick: sel.pick, line: sel.line ?? null, label: sel.label,
+    refOdds: odds || null, oddsMx: oddsMx ? Number(oddsMx) : null, odds: finalOdds,
+    p: sel.p, pModel: sel.pModel, pMarket: sel.pMarket, ev: sel.p * finalOdds - 1,
+    stake, source, reasoning, placedAt: Date.now(), status: 'pending', payout: 0, closingOdds: null, book,
+    minOdds: sel.minOdds ?? null, placedReal: false,
+  };
+  // Cada momio capturado por casa sirve para aprender qué casa paga mejor.
+  for (const [b, q] of Object.entries(quotes)) if (q) recordQuote(state, { book: b, sport: ev.sport, market: sel.market, odds: q, refOdds: odds });
+  state.bets.unshift(bet);
+  state.bankroll = round2(state.bankroll - stake);
+  log(`${source === 'manual' ? 'Apuesta' : 'Bot (' + source + ')'}: $${stake} a ${bet.label} @ ${finalOdds.toFixed(2)} — ${ev.name}`, 'bet');
+  return bet;
+}
+
+export function cancelBet(id) {
+  const b = state.bets.find((x) => x.id === id);
+  if (!b || b.status !== 'pending') return;
+  b.status = 'void';
+  state.bankroll = round2(state.bankroll + b.stake);
+  log(`Apuesta anulada: ${b.label} (${b.eventName})`);
+}
+
+export function setMxOdds(id, oddsMx, book = null) {
+  const b = state.bets.find((x) => x.id === id);
+  if (!b || b.status !== 'pending') return;
+  if (book) b.book = book;
+  if (b.book && oddsMx && b.refOdds) recordQuote(state, { book: b.book, sport: b.sport, market: b.market, odds: Number(oddsMx), refOdds: b.refOdds });
+  b.oddsMx = Number(oddsMx) || null;
+  b.odds = b.oddsMx || b.refOdds;
+  b.ev = b.p * b.odds - 1;
+  save();
+}
+
+const round2 = (x) => Math.round(x * 100) / 100;
+// Capital total = banca disponible + lo que está en juego (la gráfica no debe "caer" al apostar).
+export const equityNow = () => round2(state.bankroll + pendingBets().reduce((a, b) => a + b.stake, 0));
+
+// ---------- liquidación ----------
+function resultOf(bet, ev) {
+  const hs = ev.home.score ?? 0, as = ev.away.score ?? 0;
+  if (bet.market === 'Goles') {
+    const t = hs + as;
+    if (t === bet.line) return 'void';
+    return (bet.pick === 'over' ? t > bet.line : t < bet.line) ? 'won' : 'lost';
+  }
+  let winner;
+  if (ev.sport === 'tennis' || (ev.sport === 'esports' && hs === as)) winner = ev.home.winner ? 'home' : ev.away.winner ? 'away' : null;
+  else winner = hs > as ? 'home' : hs < as ? 'away' : 'draw';
+  if (!winner) return null;
+  if (winner === 'draw' && bet.market === 'Ganador') return 'void';
+  return winner === bet.pick ? 'won' : 'lost';
+}
+
+export function settleWithEvents(events) {
+  const byId = new Map(events.map((e) => [e.id, e]));
+  let changed = false;
+  for (const b of state.bets) {
+    if (b.status !== 'pending') continue;
+    const ev = byId.get(b.eventId);
+    if (!ev || !ev.completed) continue;
+    const r = resultOf(b, ev);
+    if (!r) continue;
+    b.status = r;
+    b.finalScore = `${ev.home.score ?? '-'}-${ev.away.score ?? '-'}`;
+    b.settledAt = Date.now();
+    if (!b.live && ev.odds && ev.odds[b.pick]) b.closingOdds = ev.odds[b.pick];
+    if (r === 'won') { b.payout = round2(b.stake * b.odds); state.bankroll = round2(state.bankroll + b.payout); }
+    if (r === 'void') { b.payout = b.stake; state.bankroll = round2(state.bankroll + b.stake); }
+    // Saldo en la casa donde se colocó (si lo llevas capturado)
+    const bk = b.book && state.books[b.book];
+    if (bk && bk.balance != null && bk.balance !== '') {
+      if (r === 'won') bk.balance = round2(Number(bk.balance) + b.payout - b.stake);
+      if (r === 'lost') bk.balance = round2(Number(bk.balance) - b.stake);
+    }
+    log(`${r === 'won' ? '✅ Ganada' : r === 'lost' ? '❌ Perdida' : '↩️ Anulada'}: ${b.label} (${b.eventName}) ${b.finalScore}`, r);
+    changed = true;
+  }
+  if (changed) { state.history.push({ t: Date.now(), bankroll: equityNow() }); save(); }
+  return changed;
+}
+
+// ---------- aprendizaje ----------
+// Se guarda la predicción previa al partido (modelo y mercado). Al terminar, se compara la
+// precisión (Brier) de ambos y se ajusta cuánto confiar en el modelo en cada deporte.
+export function recordPrediction(ev, model, sels) {
+  if (ev.state !== 'pre' || state.predictions[ev.id]) return;
+  const ml = sels.filter((s) => s.market === '1X2' || s.market === 'Ganador');
+  if (!ml.length) return;
+  state.predictions[ev.id] = {
+    sport: ev.sport, leagueId: ev.leagueId, date: ev.date, name: ev.name,
+    model: Object.fromEntries(ml.map((s) => [s.pick, s.pModel])),
+    market: ml.every((s) => s.pMarket != null) ? Object.fromEntries(ml.map((s) => [s.pick, s.pMarket])) : null,
+    done: false,
+  };
+}
+
+export function learnFromEvents(events) {
+  let changed = false;
+  for (const ev of events) {
+    const pr = state.predictions[ev.id];
+    if (!pr || pr.done || !ev.completed) continue;
+    const hs = ev.home.score ?? 0, as = ev.away.score ?? 0;
+    const winner = ev.sport === 'tennis' ? (ev.home.winner ? 'home' : 'away') : hs > as ? 'home' : hs < as ? 'away' : 'draw';
+    const sum = (probs) => Object.entries(probs).reduce((a, [k, p]) => a + brier(p, k === winner ? 1 : 0), 0);
+    pr.outcome = winner;
+    pr.brierModel = sum(pr.model);
+    pr.brierMarket = pr.market ? sum(pr.market) : null;
+    pr.done = true;
+    changed = true;
+  }
+  if (!changed) return false;
+  // Limpia predicciones viejas (más de 120 días)
+  const cutoff = Date.now() - 120 * 86400000;
+  for (const [k, v] of Object.entries(state.predictions)) if (new Date(v.date).getTime() < cutoff) delete state.predictions[k];
+  for (const sport of Object.keys(state.weights)) {
+    const done = Object.values(state.predictions).filter((p) => p.done && p.sport === sport && p.brierMarket != null);
+    if (done.length < 15) continue;
+    const bm = done.reduce((a, p) => a + p.brierModel, 0) / done.length;
+    const bk = done.reduce((a, p) => a + p.brierMarket, 0) / done.length;
+    const target = Math.max(0.1, Math.min(0.65, 0.35 + 3 * (bk - bm)));
+    state.weights[sport] = Math.round((0.7 * state.weights[sport] + 0.3 * target) * 1000) / 1000;
+  }
+  save();
+  return true;
+}
+
+export function learningStats() {
+  const out = {};
+  for (const p of Object.values(state.predictions)) {
+    if (!p.done) continue;
+    const o = (out[p.sport] ||= { n: 0, nm: 0, bm: 0, bk: 0, hits: 0 });
+    o.n++;
+    o.bm += p.brierModel;
+    if (p.brierMarket != null) { o.nm++; o.bk += p.brierMarket; }
+    const fav = Object.entries(p.model).sort((a, b) => b[1] - a[1])[0][0];
+    if (fav === p.outcome) o.hits++;
+  }
+  for (const o of Object.values(out)) { o.bm /= o.n || 1; o.bk = o.nm ? o.bk / o.nm : null; o.hitRate = o.hits / (o.n || 1); }
+  return out;
+}
+
+// ---------- métricas ----------
+export function metrics() {
+  const settled = state.bets.filter((b) => b.status === 'won' || b.status === 'lost');
+  const staked = settled.reduce((a, b) => a + b.stake, 0);
+  const returned = settled.reduce((a, b) => a + (b.status === 'won' ? b.payout : 0), 0);
+  const wins = settled.filter((b) => b.status === 'won').length;
+  const clvBets = settled.filter((b) => b.closingOdds);
+  const clv = clvBets.length ? clvBets.reduce((a, b) => a + (b.odds / b.closingOdds - 1), 0) / clvBets.length : null;
+  const pending = pendingBets();
+  const bySport = {};
+  for (const b of settled) {
+    const s = (bySport[b.sport] ||= { n: 0, staked: 0, profit: 0 });
+    s.n++; s.staked += b.stake; s.profit += (b.status === 'won' ? b.payout : 0) - b.stake;
+  }
+  return {
+    n: settled.length, wins, hitRate: settled.length ? wins / settled.length : null,
+    staked, profit: returned - staked, roi: staked ? (returned - staked) / staked : null,
+    clv, clvN: clvBets.length, pendingN: pending.length, pendingStake: pending.reduce((a, b) => a + b.stake, 0),
+    equity: state.bankroll + pending.reduce((a, b) => a + b.stake, 0),
+    avgOdds: settled.length ? settled.reduce((a, b) => a + b.odds, 0) / settled.length : null,
+    expectedProfit: settled.reduce((a, b) => a + b.stake * b.ev, 0),
+    bySport,
+  };
+}

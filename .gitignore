@@ -1,0 +1,5 @@
+# Datos personales y claves: NUNCA se suben a GitHub
+.env
+data/
+*.zip
+.claude/
