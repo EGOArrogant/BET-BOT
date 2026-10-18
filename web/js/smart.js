@@ -25,14 +25,16 @@ export async function leaderboard(period = 'MONTH', limit = 25) {
 }
 
 // Win rate real en una misma ventana de tiempo:
-//  - "closed-positions" solo trae lo que se COBRÓ o se vendió (ahí están las ganadas),
+//  - "closed-positions" solo trae lo que se COBRÓ o se vendió (ahí están las ganadas); se piden las MÁS RECIENTES
+//    (por defecto vienen ordenadas por ganancia, y eso inflaba la ventana y desequilibraba la cuenta),
 //  - las PERDIDAS se quedan en "positions" con precio 0 (no se cobran),
 // así que se juntan ambas fuentes y se cuentan solo las que terminaron dentro de la ventana que cubre la muestra (máx. 90 días).
-export async function traderStats(wallet) {
+export async function traderStats(wallet, { deep = true } = {}) {
+  // deep: muestra más grande (ranking). Para los apostadores de cada partido se usa una muestra ligera (menos consultas).
   const ttl = 6 * 3600_000;
   const [closedPages, posPages] = await Promise.all([
-    Promise.all([0, 50, 100, 150].map((o) => px(`${DATA}/closed-positions?user=${wallet}&limit=50&offset=${o}`, ttl).catch(() => []))),
-    Promise.all([0, 500].map((o) => px(`${DATA}/positions?user=${wallet}&limit=500&offset=${o}&sizeThreshold=0`, ttl).catch(() => []))),
+    Promise.all((deep ? [0, 50, 100, 150] : [0, 50]).map((o) => px(`${DATA}/closed-positions?user=${wallet}&limit=50&offset=${o}&sortBy=TIMESTAMP&sortDirection=DESC`, ttl).catch(() => []))),
+    Promise.all((deep ? [0, 500] : [0]).map((o) => px(`${DATA}/positions?user=${wallet}&limit=500&offset=${o}&sizeThreshold=0`, ttl).catch(() => []))),
   ]);
   const uniq = (arr) => { const seen = new Set(); return arr.filter((p) => { const k = p.conditionId + '|' + p.outcomeIndex; if (!p.conditionId || seen.has(k)) return false; seen.add(k); return true; }); };
   const closed = uniq(closedPages.flat());
@@ -63,6 +65,21 @@ export async function traderPositions(wallet) {
       initial: Number(p.initialValue), pnl: Number(p.cashPnl), endDate: p.endDate, icon: p.icon,
     }));
 }
+
+// Algunos nombres son la cartera completa (0x…-123456): se recortan.
+const shortName = (n) => (/^0x[0-9a-f]{20,}/i.test(n) ? n.slice(0, 6) + '…' + n.slice(38, 42) : n.length > 22 ? n.slice(0, 21) + '…' : n);
+
+// Mayores apostadores de un mercado (por resultado). amount = acciones; cada acción paga $1 si gana.
+export async function marketHolders(conditionId) {
+  const groups = await px(`${DATA}/holders?market=${conditionId}&limit=20`, 2 * 60_000);
+  return (groups || []).flatMap((g) => (g.holders || []).map((h) => ({
+    wallet: h.proxyWallet, name: shortName(h.name || h.pseudonym || h.proxyWallet), amount: Number(h.amount), outcomeIndex: Number(h.outcomeIndex),
+    image: h.profileImage || '', url: `https://polymarket.com/profile/${h.proxyWallet}`,
+  })));
+}
+
+// ¿Es un apostador con historial bueno? (suficientes apuestas resueltas, win rate y ganancia positivos)
+export const isSharp = (s) => !!s && s.n >= 20 && s.winRate >= 0.55 && s.realized > 0;
 
 // Calidad de un apostador para "seguirlo": win rate con muestra suficiente + ROI positivo.
 export function traderScore(t) {

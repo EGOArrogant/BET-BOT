@@ -7,6 +7,9 @@
 
 param([int]$Port = 8787)
 
+# Versión del servidor: la app la compara con la de la página para avisar si hace falta reiniciarlo.
+$SERVER_VERSION = '1.7.0'
+
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -152,6 +155,7 @@ function Get-LocalVersion {
 # ---------- arranque: intenta abrir para la red local; si no hay permiso, solo esta PC ----------
 $script:lanEnabled = $false
 $script:rebind = $false
+$script:restart = $false
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://+:$Port/")
 try { $listener.Start(); $script:lanEnabled = $true }
@@ -186,6 +190,7 @@ try {
           hasUpdates   = [bool]$cfg['UPDATE_MANIFEST_URL']
           local        = $req.IsLocal
           lan          = $script:lanEnabled
+          serverVersion = $SERVER_VERSION
         }
         Send-Text $ctx ($out | ConvertTo-Json -Compress)
       }
@@ -356,7 +361,14 @@ try {
         # Se compara sin fines de línea (CRLF/LF) para no pedir reinicio si solo cambió el formato.
         $serverChanged = (([IO.File]::ReadAllText((Join-Path $root 'server.ps1')) -replace "`r", '') -ne ($oldServer -replace "`r", ''))
         Remove-Item -Recurse -Force $tmp; Remove-Item -Force $zipPath
-        Send-Text $ctx (@{ ok = $true; version = [string]$manifest.version; serverChanged = $serverChanged } | ConvertTo-Json -Compress)
+        Send-Text $ctx (@{ ok = $true; version = [string]$manifest.version; serverChanged = $serverChanged; restarting = $serverChanged } | ConvertTo-Json -Compress)
+        # Si cambió el servidor, se reinicia solo para usar el código nuevo (antes había que cerrar y abrir iniciar.bat).
+        if ($serverChanged) { $script:restart = $true }
+      }
+      elseif ($path -eq '/api/restart' -and $req.HttpMethod -eq 'POST') {
+        if (-not $req.IsLocal) { Send-Text $ctx '{"error":"solo desde la PC"}' 'application/json' 403; continue }
+        Send-Text $ctx '{"ok":true,"restarting":true}'
+        $script:restart = $true
       }
       else {
         $rel = if ($path -eq '/') { 'index.html' } else { $path.TrimStart('/') -replace '/', '\' }
@@ -370,6 +382,14 @@ try {
     catch {
       Write-Host "Error en $path : $($_.Exception.Message)"
       try { Send-Text $ctx (@{ error = $_.Exception.Message } | ConvertTo-Json -Compress) 'application/json' 500 } catch {}
+    }
+    # Reinicio: abre un servidor nuevo (con el código actualizado) en su propia ventana y cierra este.
+    if ($script:restart) {
+      Write-Host "Reiniciando BetBot MX con la version nueva..." -ForegroundColor Cyan
+      $serverFile = Join-Path $root 'server.ps1'
+      Start-Process -FilePath 'powershell.exe' -WorkingDirectory $root -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', "Start-Sleep -Seconds 2; & '$serverFile' -Port $Port")
+      $listener.Stop(); $listener.Close()
+      exit 0
     }
     # Tras activar el celular, el servidor se vuelve a abrir para la red local sin tener que reiniciarlo.
     if ($script:rebind) {

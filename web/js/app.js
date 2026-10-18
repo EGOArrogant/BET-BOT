@@ -106,7 +106,7 @@ async function refreshAll() {
   // El piloto automático y la práctica diaria corren solo en un dispositivo (evita apuestas duplicadas).
   await autopilot();
   try { await loadRelevantNews(); } catch {}
-  refreshSmart().then(() => { mapSmartToEvents(); }); // top apostadores de Polymarket (cada ~5 min, en segundo plano)
+  refreshSmart().then(() => { mapSmartToEvents(); scanEventSmart(); }); // top apostadores de Polymarket + dinero inteligente por partido (segundo plano)
   mapSmartToEvents();
   collectNotifications();
   S.lastUpdate = Date.now();
@@ -269,6 +269,17 @@ async function buildContext(a) {
       const agg = S.smart.byEvent.get(key(a.ev));
       return agg ? Object.fromEntries(Object.entries(agg).map(([side, s]) => [side, { cuantos: s.traders.length, usd: Math.round(s.usd), quienes: s.traders.map((t) => `${t.name} a ${t.price}`) }])) : null;
     })(),
+    dinero_inteligente_polymarket: await (async () => {
+      const r = await loadEventSmart(a, { perSide: 6 }).catch(() => null);
+      if (!r || !Object.keys(r.sides).length) return null;
+      return {
+        lado_de_los_sharps: r.best, // sharp = 20+ apuestas resueltas, win rate ≥55% y ganancia positiva (90 días)
+        lados: Object.fromEntries(Object.entries(r.sides).map(([side, s]) => [side, {
+          precio: s.price, usd_mayores: Math.round(s.all), sharps: s.sharpN, usd_sharps: Math.round(s.sharpValue),
+          mayores: s.holders.slice(0, 6).map((h) => ({ nombre: h.name, usd: Math.round(h.value), win_rate: h.stats?.winRate ?? null, apuestas: h.stats?.n ?? null, ganancia_90d: h.stats ? Math.round(h.stats.realized) : null, ranking: h.rank })),
+        }])),
+      };
+    })(),
     mercados_prediccion: a.ev.pm ? { prob_local: a.ev.pm.home, prob_visitante: a.ev.pm.away, prob_empate: a.ev.pm.draw, fuentes: a.ev.pm.sources.map((s) => ({ fuente: s.source, liquidez_usd: Math.round(s.liquidity || 0), local: s.home, visitante: s.away, empate: s.draw })) } : null,
     modelo: { previo: a.model.pre, en_vivo: a.model.live, goles_esperados: a.model.lh ? { local: a.model.lh, visitante: a.model.la } : undefined, peso_modelo: st.weights[a.ev.sport] },
     selecciones: a.sels.map((s) => ({ mercado: s.market, seleccion: s.pick, texto: s.label, linea: s.line, p_modelo: s.pModel, p_mercado: s.pMarket, p_final: s.p, momio_ref: s.odds, ev: s.ev, momio_minimo: s.minOdds })),
@@ -374,6 +385,14 @@ function labelTables(root) {
   }
 }
 
+// Aviso si la página es más nueva que el servidor que está corriendo (pasa si se actualizó sin reiniciar).
+function serverBanner() {
+  if (!S.cfg.local || !S.version) return '';
+  const sv = S.cfg.serverVersion;
+  if (sv && cmpVer(sv, '1.7.0') >= 0) return '';
+  return `<div class="warn" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="grow"><b>El servidor sigue con la versión anterior.</b> Algunas funciones (como Top Polymarket) no van a funcionar hasta reiniciarlo.</div><button class="btn small primary" data-restartserver>↻ Reiniciar servidor</button></div>`;
+}
+
 // No se re-pinta mientras escribes en un campo (para no perder lo que tecleas).
 const typingInView = () => { const a = document.activeElement; return a && $('#view').contains(a) && /INPUT|TEXTAREA|SELECT/.test(a.tagName); };
 
@@ -383,7 +402,7 @@ function render() {
   S.pendingRender = false;
   const v = $('#view');
   const views = { home: viewHome, soccer: () => viewSection('soccer'), sports: () => viewSection('sports'), esports: () => viewSection('esports'), combat: viewCombat, smart: viewSmart, bet: viewBet, gold: viewGold, bank: viewBank, news: viewNews, more: viewMore };
-  v.innerHTML = views[S.tab]();
+  v.innerHTML = serverBanner() + views[S.tab]();
   labelTables(v);
   if (S.tab === 'home' || S.tab === 'bank') drawEquity();
   if (S.tab === 'news') loadNews();
@@ -497,10 +516,10 @@ function tagsFor(a) {
     const vv = a.sels.filter((s) => s.value);
     if (vv.length && ev.state === 'pre') t.push(`<span class="tag value">Valor ${pct(Math.max(...vv.map((s) => s.ev)), 1)}</span>`);
     if (B.hasBetOn(ev.id)) t.push('<span class="tag bet">Apostado</span>');
-    t.push(smartTag(a));
+    t.push(smartTag(a), sharpTag(a));
     return t.join('');
   }
-  t.push(smartTag(a));
+  t.push(smartTag(a), sharpTag(a));
   if (a.golden.length) t.push('<span class="tag gold">★ Oro</span>');
   const v = a.sels.filter((s) => s.value);
   if (v.length && a.ev.state === 'pre') t.push(`<span class="tag value">Valor ${pct(Math.max(...v.map((s) => s.ev)), 1)}</span>`);
@@ -624,8 +643,8 @@ async function refreshSmart(force = false) {
   if (sm.busy || (!force && Date.now() - sm.lastScan < 4 * 60_000)) return;
   sm.busy = true; sm.error = null;
   const st = B.getState().smart;
-  // v2: el win rate ahora cuenta también las apuestas perdidas (antes salían en 100%); se recalcula todo una vez.
-  if (!st.v2) { st.stats = {}; st.follows = []; st.autoFollow = true; st.v2 = true; }
+  // v2/v3: el win rate ahora cuenta también las apuestas perdidas (antes salían en 100%); se recalcula todo una vez.
+  if (!st.v3) { st.stats = {}; st.follows = []; st.autoFollow = true; st.v2 = st.v3 = true; } // v3: muestra de las más recientes
   try {
     sm.board = await SM.leaderboard(sm.period, 25);
     // Win rate real (ganadas + perdidas en la misma ventana), 3 a la vez; se guarda 6 h.
@@ -709,6 +728,129 @@ function smartBlock(a) {
   return `<div class="widget mt" style="background:var(--fill)"><h3>🐋 Lo que apuestan los top de Polymarket</h3>
     ${Object.entries(agg).map(([side, s]) => `<div class="prop-row"><div><b>${esc(label[side])}</b><div class="note">${s.traders.map((t) => `${esc(t.name)} (entró a ${pct(t.price)})`).join(' · ')}</div></div><div class="pp">${s.traders.length}</div><div class="note">${money0(s.usd)}</div></div>`).join('')}
     <div class="note mt">Es una señal, no una garantía: los mejores también pierden, y a veces cubren posiciones. Úsala junto con el análisis.</div></div>`;
+}
+
+// ---------- Dinero inteligente por partido ----------
+// Para cada partido con mercado en Polymarket: quiénes son los que más dinero tienen en cada lado,
+// su win rate real y si están en el ranking. "Sharp" = ≥20 apuestas resueltas, win rate ≥55% y ganancia positiva.
+S.smart.events = new Map(); // key -> { t, busy, sides: { home|away|draw: { holders, value, sharpN, sharpValue, score } }, best }
+const pmSource = (a) => (a.ev.pm?.sources || []).find((s) => s.source === 'Polymarket' && s.cond);
+
+async function loadEventSmart(a, { perSide = 6, force = false } = {}) {
+  const k = key(a.ev), src = pmSource(a);
+  if (!src) return null;
+  const sm = S.smart, st = B.getState().smart;
+  const cur = sm.events.get(k);
+  if (cur?.busy || (!force && cur && Date.now() - cur.t < 5 * 60_000 && cur.perSide >= perSide)) return cur;
+  const rec = { t: Date.now(), busy: true, perSide, sides: {}, best: null, error: null };
+  if (cur) Object.assign(rec, { sides: cur.sides, best: cur.best });
+  sm.events.set(k, rec);
+  try {
+    const byCond = new Map(); // un mismo mercado trae los dos lados (partidos de 2 resultados)
+    const sides = Object.entries(src.cond).filter(([, c]) => c);
+    for (const [, c] of sides) if (!byCond.has(c.conditionId)) byCond.set(c.conditionId, await SM.marketHolders(c.conditionId));
+    const ranks = new Map((sm.board || []).map((t) => [t.wallet, t.rank]));
+    const out = {};
+    for (const [side, c] of sides) {
+      const price = src[side] ?? 0.5;
+      const holders = byCond.get(c.conditionId).filter((h) => h.outcomeIndex === c.outcomeIndex).sort((x, y) => y.amount - x.amount);
+      out[side] = { price, holders: holders.map((h) => ({ ...h, value: h.amount * price, rank: ranks.get(h.wallet) || null })), all: holders.reduce((s, h) => s + h.amount * price, 0) };
+    }
+    // Win rate de los más grandes de cada lado (3 a la vez; se guarda 6 h).
+    const need = [...new Set(Object.values(out).flatMap((s) => s.holders.slice(0, perSide).map((h) => h.wallet)))]
+      .filter((w) => !st.stats[w] || Date.now() - st.stats[w].t > 6 * 3600_000);
+    for (let i = 0; i < need.length; i += 3) {
+      await Promise.all(need.slice(i, i + 3).map(async (w) => { try { st.stats[w] = await SM.traderStats(w, { deep: false }); } catch {} }));
+    }
+    for (const s of Object.values(out)) {
+      for (const h of s.holders) h.stats = st.stats[h.wallet] || null;
+      const sharps = s.holders.slice(0, perSide).filter((h) => SM.isSharp(h.stats));
+      s.sharpN = sharps.length;
+      s.sharpValue = sharps.reduce((x, h) => x + h.value, 0);
+      // Peso: dinero × ventaja sobre el 50% (un 70% de win rate pesa el doble que un 60%).
+      s.score = sharps.reduce((x, h) => x + h.value * (h.stats.winRate - 0.5), 0);
+    }
+    const ranked = Object.entries(out).sort((x, y) => y[1].score - x[1].score);
+    const [first, second] = ranked;
+    rec.best = first && first[1].score > 0 && (!second || first[1].score >= 1.5 * second[1].score) ? first[0] : null;
+    rec.sides = out;
+    rec.t = Date.now();
+  } catch (e) { rec.error = e.message; }
+  rec.busy = false;
+  return rec;
+}
+
+// En segundo plano: partidos de las próximas 36 h (y en vivo) con mercado en Polymarket, pocos a la vez.
+let eventSmartBusy = false;
+async function scanEventSmart() {
+  if (eventSmartBusy) return;
+  eventSmartBusy = true;
+  try {
+    const soon = Date.now() + 36 * 3600_000;
+    const list = allAnalyses().filter((a) => a.ev.state !== 'post' && new Date(a.ev.date).getTime() < soon && pmSource(a))
+      .filter((a) => { const r = S.smart.events.get(key(a.ev)); return !r || Date.now() - r.t > 15 * 60_000; })
+      .sort((x, y) => new Date(x.ev.date) - new Date(y.ev.date)).slice(0, 6);
+    for (const a of list) await loadEventSmart(a, { perSide: 4 });
+    // Limpia win rates viejos (no crecer el archivo de datos sin fin).
+    const st = B.getState().smart;
+    for (const [w, s] of Object.entries(st.stats)) if (Date.now() - s.t > 7 * 86400000) delete st.stats[w];
+    if (list.length) { B.save(); if (['home', 'soccer', 'sports', 'combat', 'esports', 'smart'].includes(S.tab)) render(); }
+  } catch (e) { console.warn('smart eventos', e); }
+  eventSmartBusy = false;
+}
+
+const sideName = (a, side) => (side === 'home' ? a.ev.home.name : side === 'away' ? a.ev.away.name : 'Empate');
+
+function sharpTag(a) {
+  const r = S.smart.events.get(key(a.ev));
+  if (!r?.best) return '';
+  const s = r.sides[r.best];
+  const lbl = r.best === 'draw' ? 'Empate' : a.ev[r.best].abbr || a.ev[r.best].name;
+  return `<span class="tag sharp-tag" title="Apostadores de Polymarket con buen historial (win rate ≥55%, 20+ apuestas) cargados de este lado">🧠 ${s.sharpN} sharp en ${esc(lbl)}</span>`;
+}
+
+function eventSmartSummary(a) {
+  const r = S.smart.events.get(key(a.ev));
+  if (!r || !Object.keys(r.sides).length) return '';
+  const rows = Object.entries(r.sides).map(([side, s]) => `<div class="prop-row"><div><b>${esc(sideName(a, side))}</b><div class="note">${s.sharpN ? `${s.sharpN} sharp · ${money0(s.sharpValue)}` : 'sin sharps entre los grandes'}</div></div><div class="pp">${pct(s.price)}</div><div class="note">${money0(s.all)}</div></div>`).join('');
+  return `<div class="widget mt sharp-box"><h3>🧠 Dinero inteligente ${r.best ? `→ <span class="up">${esc(sideName(a, r.best))}</span>` : ''}</h3>${rows}
+    <button class="btn small mt" data-stab="smart">Ver quiénes son y su win rate →</button></div>`;
+}
+
+function tabEventSmart(a) {
+  const src = pmSource(a);
+  if (!src) return `<div class="widget" style="background:var(--fill)"><div class="note">Este partido no tiene mercado en Polymarket (todavía). Cuando lo abran, aquí verás quiénes apuestan, de qué lado y con qué win rate.</div></div>`;
+  const r = S.smart.events.get(key(a.ev));
+  const loading = '<div class="shimmer"></div><div class="shimmer"></div><div class="note">Buscando a los mayores apostadores y calculando su win rate…</div>';
+  if (!r || (!Object.keys(r.sides).length && r.busy)) return `<div id="eventsmart-box">${loading}</div>`;
+  if (r.error && !Object.keys(r.sides).length) return `<div class="warn">${esc(r.error)}</div><button class="btn small mt" data-eventsmart="${key(a.ev)}">↻ Reintentar</button>`;
+  const verdict = r.best
+    ? `<div class="widget sharp-box"><b>🧠 Los apostadores con mejor historial están cargados en ${esc(sideName(a, r.best))}</b><div class="note">${r.sides[r.best].sharpN} sharp con ${money0(r.sides[r.best].sharpValue)} en ese lado (precio ${pct(r.sides[r.best].price)}).</div></div>`
+    : '<div class="widget" style="background:var(--fill)"><b>Sin consenso claro</b><div class="note">Los sharps están repartidos o no hay suficientes entre los grandes. Sin señal fuerte de dinero inteligente.</div></div>';
+  const holderRow = (h) => {
+    const s = h.stats, sharp = SM.isSharp(s);
+    return `<tr class="${sharp ? 'sharp-row' : ''}"><td>${h.image ? `<img class="avatar" src="${esc(h.image)}" alt="" onerror="this.remove()">` : ''}<a href="${esc(h.url)}" target="_blank" rel="noopener">${esc(h.name)} ↗</a>
+      ${h.rank ? `<span class="tag value">#${h.rank} ranking</span>` : ''}${sharp ? '<span class="tag sharp-tag">🧠 sharp</span>' : ''}</td>
+      <td class="num">${money0(h.value)}<div class="note">cobra ${money0(h.amount)}</div></td>
+      <td class="num ${s && s.winRate >= 0.55 ? 'up' : s && s.winRate < 0.45 ? 'down' : ''}">${s ? (s.winRate != null ? pct(s.winRate) : '—') + `<div class="note">${s.wins} de ${s.n}</div>` : '<span class="note">—</span>'}</td>
+      <td class="num ${s && s.realized > 0 ? 'up' : s && s.realized < 0 ? 'down' : ''}">${s ? (s.realized >= 0 ? '+' : '') + money0(s.realized) : '—'}</td></tr>`;
+  };
+  const sides = Object.entries(r.sides).map(([side, s]) => `<div class="widget mt" style="background:var(--fill)">
+    <h3>${esc(sideName(a, side))} <span class="note">· precio ${pct(s.price)} · ${money0(s.all)} de los ${s.holders.length} mayores</span></h3>
+    ${s.holders.length ? `<table class="rtable"><thead><tr><th>Apostador</th><th class="num">Posición</th><th class="num">Win rate</th><th class="num">Ganancia</th></tr></thead><tbody>${s.holders.slice(0, r.perSide).map(holderRow).join('')}</tbody></table>
+    ${s.holders.length > r.perSide ? `<div class="note">+${s.holders.length - r.perSide} apostadores más pequeños</div>` : ''}` : '<div class="note">Nadie con posición todavía.</div>'}</div>`).join('');
+  return `<div id="eventsmart-box">${verdict}${sides}
+    <div class="flex mt">${r.perSide < 10 ? `<button class="btn small" data-eventsmart="${key(a.ev)}" data-more="1">Analizar a más apostadores</button>` : ''}<button class="btn small" data-eventsmart="${key(a.ev)}">${r.busy ? 'Actualizando…' : '↻ Actualizar'}</button>
+    <a class="btn small" href="${esc(src.url)}" target="_blank" rel="noopener">Abrir en Polymarket ↗</a></div>
+    <div class="note mt">Win rate y ganancia de los últimos ~90 días (ganadas y perdidas, datos públicos). Posición = lo que vale hoy; "cobra" = lo que recibe si gana. Es una señal, no una garantía: los sharps también pierden y a veces cubren otras apuestas. Polymarket es solo referencia; tus apuestas son en casas de México.</div></div>`;
+}
+
+async function showEventSmart(a, opts) {
+  const k = key(a.ev);
+  const p = loadEventSmart(a, opts);
+  if (S.open === k && S.sheetTab === 'smart') renderSheet(); // muestra "actualizando…"
+  await p;
+  if (S.open === k && (S.sheetTab === 'smart' || S.sheetTab === 'analysis')) renderSheet();
 }
 
 function viewSmart() {
@@ -1098,10 +1240,10 @@ function renderSheet() {
   const status = ev.state === 'in' ? `<span class="live-tag" style="color:var(--red)"><span class="dot live"></span> ${esc(ev.detail)}</span>` : ev.state === 'post' ? 'Final' : new Date(ev.date).toLocaleString('es-MX', { weekday: 'long', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   const team = (t) => `<div>${t.logo ? `<img src="${esc(t.logo)}" alt="" onerror="this.remove()">` : `<div style="font-size:40px">${D.SPORT_ICON[ev.sport]}</div>`}<div class="tname">${esc(t.name)}</div><div class="note">${esc(t.record || t.flag || '')}${t.form ? ' · ' + esc(t.form) : ''}</div></div>`;
   const tabs = ev.sport === 'mma' || ev.sport === 'boxing'
-    ? [['analysis', 'Análisis'], ['fighters', 'Peleadores'], ['markets', 'Mercados y momios'], ['experts', 'Especialistas'], ['ai', '✦ IA']]
+    ? [['analysis', 'Análisis'], ['smart', '🧠 Dinero inteligente'], ['fighters', 'Peleadores'], ['markets', 'Mercados y momios'], ['experts', 'Especialistas'], ['ai', '✦ IA']]
     : ev.sport === 'esports'
-    ? [['analysis', 'Análisis'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']]
-    : [['analysis', 'Análisis'], ['lineups', ev.sport === 'soccer' ? 'Alineaciones' : 'Plantilla'], ['stats', 'Estadísticas'], ['feed', 'Minuto a minuto'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']];
+    ? [['analysis', 'Análisis'], ['smart', '🧠 Dinero inteligente'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']]
+    : [['analysis', 'Análisis'], ['smart', '🧠 Dinero inteligente'], ['lineups', ev.sport === 'soccer' ? 'Alineaciones' : 'Plantilla'], ['stats', 'Estadísticas'], ['feed', 'Minuto a minuto'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']];
   $('#sheet-body').innerHTML = `<div class="scoreboard">${team(ev.home)}<div><div class="big">${esc(big)}</div><div class="st">${status}</div>${ev.sport === 'tennis' && ev.state !== 'pre' ? `<div class="note">${ev.home.linescores.join(' ')}<br>${ev.away.linescores.join(' ')}</div>` : ''}</div>${team(ev.away)}</div>
     <div class="segmented tabs-inline">${tabs.map(([k, l]) => `<button data-stab="${k}" class="${S.sheetTab === k ? 'active' : ''}">${l}</button>`).join('')}</div>
     <div id="stab-body">${sheetTab(a, sum)}</div>`;
@@ -1109,6 +1251,7 @@ function renderSheet() {
   if (S.sheetTab === 'news') loadMatchNews(a);
   if (S.sheetTab === 'fighters') loadFighters(a);
   if (S.sheetTab === 'experts') loadExperts(a);
+  if ((S.sheetTab === 'smart' || S.sheetTab === 'analysis') && pmSource(a) && !S.smart.events.get(S.open)) showEventSmart(a, { perSide: S.sheetTab === 'smart' ? 6 : 4 });
 }
 
 function sheetTab(a, sum) {
@@ -1124,6 +1267,7 @@ function sheetTab(a, sum) {
     case 'fighters': return '<div id="fighters-box">' + loading + '</div>';
     case 'markets': return tabFightMarkets(a);
     case 'experts': return '<div id="experts-box">' + loading + '</div>';
+    case 'smart': return tabEventSmart(a);
   }
   return '';
 }
@@ -1148,6 +1292,7 @@ function tabAnalysis(a) {
     <td>${ev.state !== 'post' ? `<button class="btn small ${s.value && ev.state === 'pre' ? 'primary' : ''}" data-slip="${key(ev)}|${s.pick}">Apostar</button>` : ''}</td></tr>`; }).join('')}
   </tbody></table></div>
   ${a.golden.length ? `<div class="grid opps mt">${a.golden.map((g) => oppCard(g, a)).join('')}</div>` : ''}
+  ${eventSmartSummary(a)}
   <div class="note mt">Momio mínimo MX = el momio a partir del cual la apuesta tiene EV ≥ ${pct(st.settings.minEV)} según la estimación final. Momio decimal; entre paréntesis, el formato americano que usa Caliente.</div>`;
 }
 
@@ -1302,7 +1447,7 @@ function tabFightMarkets(a) {
     : `<div class="note mt">${S.cfg.hasOdds ? 'The Odds API todavía no publica momios de esta pelea.' : 'Agrega tu clave de The Odds API en Ajustes para ver momios de casas.'}</div>`;
   return `${links ? `<div class="pm-links">${links}</div>` : '<div class="note">Polymarket y Kalshi no tienen mercado de esta pelea todavía.</div>'}
     <div class="mt">${predictionBlock(a)}</div>
-    ${smartBlock(a)}
+    ${smartBlock(a)}${eventSmartSummary(a)}
     ${books}
     ${propRows ? `<div class="widget mt" style="background:var(--fill)"><h3>¿Cómo termina? (Polymarket)</h3>${propRows}
       <div class="note mt">Probabilidad que el dinero real asigna a cada forma de terminar. Compárala con el % de KO y decisiones de cada peleador (pestaña Peleadores).</div></div>` : ''}
@@ -1358,7 +1503,7 @@ function tabOdds(a) {
     ${oa.books.sort((x, y) => (x.key === 'pinnacle' ? -1 : y.key === 'pinnacle' ? 1 : 0)).map((b) => `<tr><td>${b.key === 'pinnacle' ? '<b>Pinnacle (referencia sharp)</b>' : esc(b.title)}</td><td class="num">${dec(b.home)}</td>${oa.best.draw ? `<td class="num">${dec(b.draw)}</td>` : ''}<td class="num">${dec(b.away)}</td></tr>`).join('')}</tbody></table></div>
     <div class="note mt">Recuerda: solo puedes apostar en casas mexicanas. Usa estos momios para saber cuál es el precio justo.</div></div>`;
   else extra = `<button class="btn mt" data-oddsapi="${key(a.ev)}">Consultar Pinnacle y más casas</button>`;
-  return predictionBlock(a) + smartBlock(a) + ref + extra;
+  return predictionBlock(a) + smartBlock(a) + eventSmartSummary(a) + ref + extra;
 }
 
 // ---------- boleto: sección Apostar ----------
@@ -1727,16 +1872,39 @@ async function updateAction(kind) {
       const res = await fetch('/api/update/apply', { method: 'POST' });
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || 'Error al actualizar');
-      if (j.serverChanged) alert(`Se instaló la versión ${j.version}. Esta actualización cambió el servidor: cierra la ventana negra y abre de nuevo iniciar.bat.`);
-      else toast(`✓ Versión ${j.version} instalada`);
-      setTimeout(() => location.reload(), 1200);
+      toast(`✓ Versión ${j.version} instalada`);
+      if (j.restarting) await waitServerRestart();
+      else if (j.serverChanged) alert('Esta actualización cambió el servidor: cierra la ventana negra y abre de nuevo iniciar.bat.');
+      setTimeout(() => location.reload(), 800);
     } catch (e) { S.update = { error: e.message }; render(); }
+  }
+}
+
+// Espera a que el servidor se reinicie solo (nueva ventana) antes de recargar la página.
+async function waitServerRestart() {
+  toast('↻ Reiniciando el servidor con la versión nueva…', 8000);
+  await new Promise((r) => setTimeout(r, 3500));
+  for (let i = 0; i < 20; i++) {
+    try { const c = await (await fetch('/api/config', { cache: 'no-store' })).json(); if (c.serverVersion) return c; } catch {}
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return null;
+}
+
+async function restartServer() {
+  try {
+    const res = await fetch('/api/restart', { method: 'POST' });
+    if (!res.ok) throw new Error('El servidor no se puede reiniciar solo');
+    await waitServerRestart();
+    location.reload();
+  } catch {
+    alert('Este servidor es de una versión anterior y no puede reiniciarse solo. Cierra la ventana negra de BetBot MX y abre de nuevo iniciar.bat (solo esta vez).');
   }
 }
 
 // ---------- eventos ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-betsource],[data-cashout],[data-combatdiv],[data-combattitle],[data-smartperiod],[data-smartscan],[data-smartfollow],[data-smartauto],[data-airetry],[data-phoneenable],[data-notifread],[data-notifall],[data-notiffilter],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
+  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-betsource],[data-cashout],[data-combatdiv],[data-combattitle],[data-smartperiod],[data-smartscan],[data-smartfollow],[data-smartauto],[data-restartserver],[data-eventsmart],[data-airetry],[data-phoneenable],[data-notifread],[data-notifall],[data-notiffilter],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
   if (!t) return;
   // Notificaciones: tocar una la marca como leída (y luego abre su partido o enlace); ✓ solo la marca.
   if (t.dataset.notifread) {
@@ -1761,6 +1929,8 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.combatdiv) { S.combatDiv = t.dataset.combatdiv; render(); return; }
   if (t.dataset.smartperiod) { S.smart.period = t.dataset.smartperiod; S.smart.board = null; render(); refreshSmart(true); return; }
   if (t.dataset.smartscan !== undefined) { refreshSmart(true); render(); return; }
+  if (t.dataset.eventsmart) { const a = S.analysis.get(t.dataset.eventsmart); if (a) showEventSmart(a, { force: true, perSide: t.dataset.more ? 12 : (S.smart.events.get(t.dataset.eventsmart)?.perSide || 6) }); return; }
+  if (t.dataset.restartserver !== undefined) { t.disabled = true; t.textContent = 'Reiniciando…'; restartServer(); return; }
   if (t.dataset.smartauto !== undefined) { B.getState().smart.autoFollow = true; B.save(); refreshSmart(true); render(); return; }
   if (t.dataset.smartfollow) {
     const sm = B.getState().smart, w = t.dataset.smartfollow;

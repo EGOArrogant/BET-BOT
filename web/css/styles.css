@@ -542,3 +542,7 @@ html { -webkit-text-size-adjust: 100%; }
 
 /* Top Polymarket */
 .tag.smart-tag { background: color-mix(in srgb, var(--teal) 20%, transparent); color: var(--teal); }
+.tag.sharp-tag { background: color-mix(in srgb, var(--purple, #af52de) 20%, transparent); color: var(--purple, #af52de); }
+.sharp-box { background: color-mix(in srgb, var(--purple, #af52de) 10%, var(--fill)); border: 1px solid color-mix(in srgb, var(--purple, #af52de) 35%, transparent); }
+tr.sharp-row td { background: color-mix(in srgb, var(--purple, #af52de) 8%, transparent); }
+img.avatar { width: 22px; height: 22px; border-radius: 50%; vertical-align: middle; margin-right: 6px; object-fit: cover; }

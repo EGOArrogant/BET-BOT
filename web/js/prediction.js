@@ -52,13 +52,14 @@ async function polymarket(league, { includeResolved = false } = {}) {
       // Dos resultados en un solo mercado: ["Equipo A", "Equipo B"]
       const names = parseArr(ml[0].outcomes), prices = parseArr(ml[0].outcomePrices).map(Number);
       const ask = num(ml[0].bestAsk), bid = num(ml[0].bestBid);
-      names.forEach((n, i) => outcomes.push({ name: n, prob: prices[i], ask: i === 0 ? ask : bid != null ? 1 - bid : null }));
+      // cond = mercado y resultado exactos: sirven para consultar quiénes apuestan en cada lado.
+      names.forEach((n, i) => outcomes.push({ name: n, prob: prices[i], ask: i === 0 ? ask : bid != null ? 1 - bid : null, cond: { conditionId: ml[0].conditionId, outcomeIndex: i } }));
     } else {
       // Fútbol: un mercado Sí/No por resultado ("¿Gana X?", "¿Empate?")
       for (const m of ml) {
         const prices = parseArr(m.outcomePrices).map(Number);
         const label = m.groupItemTitle || m.question || '';
-        outcomes.push({ name: label, prob: prices[0], ask: num(m.bestAsk), draw: /draw|empate|tie/i.test(label) });
+        outcomes.push({ name: label, prob: prices[0], ask: num(m.bestAsk), draw: /draw|empate|tie/i.test(label), cond: { conditionId: m.conditionId, outcomeIndex: 0 } });
       }
     }
     const liq = Number(e.liquidity || ml.reduce((a, m) => a + Number(m.liquidity || 0), 0)) || 0;
@@ -221,6 +222,7 @@ export function matchPrediction(ev, markets) {
       source: m.source, url: m.url, liquidity: m.liquidity, title: m.title, props: m.props || [],
       home: h.o.prob / sum, away: a.o.prob / sum, draw: draw ? draw.prob / sum : null,
       askHome: h.o.ask, askAway: a.o.ask, askDraw: draw?.ask ?? null,
+      cond: h.o.cond ? { home: h.o.cond, away: a.o.cond, draw: draw?.cond || null } : null,
     });
   }
   if (!found.length) return null;
