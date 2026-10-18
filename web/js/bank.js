@@ -131,6 +131,8 @@ export function markPlacedReal(id, placed = true) {
 }
 
 export function log(msg, kind = 'info') {
+  // No repite el mismo mensaje si ya se registró en los últimos 30 minutos (evita llenar las notificaciones).
+  if (state.log.some((l) => l.msg === msg && Date.now() - l.t < 30 * 60_000)) return;
   state.log.unshift({ t: Date.now(), msg, kind });
   state.log = state.log.slice(0, 300);
   save();

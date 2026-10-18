@@ -1,8 +1,11 @@
 {
-  "version": "1.1.1",
+  "version": "1.1.2",
   "date": "2026-10-17",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Errores de la IA en español y claros (sin saldo, clave inválida, límite de uso)",
+    "Si la cuenta de Anthropic no tiene saldo, la IA se pausa en lugar de reintentar en cada escaneo",
+    "Ya no se repiten notificaciones iguales",
     "Actualizaciones: ya no pide reiniciar el servidor si solo cambió el formato del archivo",
     "Rediseño con barra lateral; todas las ligas visibles sin desplazamiento horizontal",
     "Sección Apostar con boleto visible y comparación de momios por casa",

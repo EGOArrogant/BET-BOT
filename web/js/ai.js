@@ -82,6 +82,25 @@ const ODDS_SCHEMA = {
   additionalProperties: false,
 };
 
+// Traduce los errores de la API a mensajes claros. `code` permite a la app pausar la IA cuando no tiene caso reintentar.
+export class AIError extends Error {
+  constructor(message, code) { super(message); this.code = code; }
+}
+function friendlyError(e) {
+  const status = e?.status;
+  const msg = String(e?.error?.error?.message || e?.message || '');
+  if (/credit balance is too low/i.test(msg)) {
+    return new AIError('Tu cuenta de la API de Anthropic no tiene saldo. Recarga créditos en console.anthropic.com → Plans & Billing. La IA queda en pausa mientras tanto.', 'sin_saldo');
+  }
+  if (status === 401 || /invalid x-api-key|authentication/i.test(msg)) {
+    return new AIError('La clave de Anthropic no es válida o fue revocada. Crea una nueva en console.anthropic.com → API Keys y pégala en Más → Ajustes.', 'clave_invalida');
+  }
+  if (status === 403) return new AIError('Tu clave de Anthropic no tiene permiso para este modelo o función. Revisa tu cuenta en console.anthropic.com.', 'sin_permiso');
+  if (status === 429) return new AIError('Se alcanzó el límite de uso de la API de Anthropic. La IA se reanudará en unos minutos.', 'limite');
+  if (status === 529 || status >= 500) return new AIError('El servicio de Anthropic está saturado o con fallas temporales. Se reintentará más tarde.', 'servicio');
+  return new AIError('Error de la IA: ' + (msg || 'desconocido'), 'otro');
+}
+
 const webSearch = (maxUses) => ({ type: 'web_search_20260209', name: 'web_search', max_uses: maxUses, user_location: { type: 'approximate', country: 'MX', timezone: 'America/Mexico_City' } });
 
 async function runStructured({ system, prompt, schema, maxUses, effort = 'medium' }) {
@@ -89,16 +108,18 @@ async function runStructured({ system, prompt, schema, maxUses, effort = 'medium
   const messages = [{ role: 'user', content: prompt }];
   let response;
   for (let turn = 0; turn < 4; turn++) {
-    response = await client.beta.messages.create({
-      model,
-      max_tokens: 16000,
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
-      system,
-      tools: [webSearch(maxUses)],
-      output_config: { effort, format: { type: 'json_schema', schema } },
-      messages,
-    });
+    try {
+      response = await client.beta.messages.create({
+        model,
+        max_tokens: 16000,
+        betas: ['server-side-fallback-2026-07-01'],
+        fallbacks: 'default',
+        system,
+        tools: [webSearch(maxUses)],
+        output_config: { effort, format: { type: 'json_schema', schema } },
+        messages,
+      });
+    } catch (e) { throw friendlyError(e); }
     if (response.stop_reason !== 'pause_turn') break;
     // La búsqueda web hizo una pausa larga: se reenvía para que continúe donde se quedó.
     messages.push({ role: 'assistant', content: response.content });

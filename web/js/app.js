@@ -113,6 +113,17 @@ async function settleOld() {
   }
 }
 
+// ---------- pausa de la IA ante errores que no se arreglan reintentando ----------
+const AI_PAUSE_MIN = { sin_saldo: 60, clave_invalida: 60, sin_permiso: 60, limite: 5, servicio: 10, otro: 10 };
+const aiPaused = () => S.aiPause && Date.now() < S.aiPause.until;
+function handleAIError(e) {
+  const code = e?.code || 'otro';
+  const mins = AI_PAUSE_MIN[code] ?? 10;
+  const already = aiPaused() && S.aiPause.code === code;
+  S.aiPause = { code, msg: e.message, until: Date.now() + mins * 60_000 };
+  if (!already) { B.log(e.message, 'error'); toast('⚠️ ' + e.message, 6000); }
+}
+
 // ---------- piloto automático ----------
 async function autopilot() {
   const st = B.getState(), s = st.settings;
@@ -133,6 +144,8 @@ async function autopilot() {
     let sel = c.sel, stake = B.suggestStake(sel.p, sel.odds), source = 'modelo';
     let reasoning = `EV ${pct(sel.ev, 1)} · modelo ${pct(sel.pModel)} vs mercado ${pct(sel.pMarket)}`;
     if (s.aiConfirm && aiReady()) {
+      // IA en pausa (sin saldo, clave inválida, límite...): no se apuesta sin su confirmación ni se reintenta en cada escaneo.
+      if (aiPaused()) break;
       if (aiCalls >= 2) break; // máximo 2 consultas de IA por escaneo para cuidar costos
       aiCalls++;
       try {
@@ -146,7 +159,7 @@ async function autopilot() {
         stake = Math.max(s.minStake, Math.floor((st.bankroll * r.stake_pct) / 5) * 5);
         source = 'IA';
         reasoning = r.resumen;
-      } catch (e) { B.log('Error de IA: ' + e.message, 'error'); continue; }
+      } catch (e) { handleAIError(e); if (aiPaused()) break; continue; }
     }
     if (!stake) continue;
     try {
@@ -297,6 +310,8 @@ function botWidget() {
       <div class="row"><div class="icon-sq" style="background:var(--purple)">✦</div><div class="grow"><b>Confirmar con IA</b><div class="meta">${aiReady() ? 'Claude revisa cada apuesta y busca noticias' : 'Agrega tu clave de Anthropic en Más → Ajustes'}</div></div>${sw('sw-ai', s.aiConfirm, !aiReady())}</div>
       <div class="row"><div class="icon-sq" style="background:var(--blue)">⏱</div><div class="grow"><b>Escaneo</b><div class="meta">Cada ${s.scanMinutes} min · última ${S.lastUpdate ? new Date(S.lastUpdate).toLocaleTimeString('es-MX') : '—'}</div></div><button class="btn small" id="scan-now">Escanear</button></div>
     </div>
+    ${aiPaused() ? `<div class="warn mt"><b>IA en pausa</b> hasta las ${new Date(S.aiPause.until).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}: ${esc(S.aiPause.msg)}${s.aiConfirm ? ' Mientras tanto, el piloto automático no apuesta (espera la confirmación de la IA).' : ''}
+      <div class="flex mt">${S.aiPause.code === 'sin_saldo' ? '<a class="btn small" href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener">Recargar saldo ↗</a>' : ''}<button class="btn small" data-airetry>Reintentar ahora</button></div></div>` : ''}
     <div class="note mt">Kelly ${pct(s.kellyFraction)} · tope ${pct(s.maxStakePct)} por apuesta · Momios extra: ${S.cfg.hasOdds ? 'The Odds API ✓' : 'no configurado'}</div>
   </div>`;
 }
@@ -909,7 +924,7 @@ async function researchSlipOdds(id) {
     }
     B.updateSlip(id, { quotes });
     B.log(`IA buscó momios de ${c.ev.name}: ${r.momios.length} encontrados, ${filled} capturados`, 'ai');
-  } catch (e) { S.oddsResearch.set(id, { error: e.message }); }
+  } catch (e) { S.oddsResearch.set(id, { error: e.message }); if (e?.code === 'sin_saldo' || e?.code === 'clave_invalida') handleAIError(e); }
   render();
 }
 
@@ -1095,6 +1110,7 @@ async function saveKey(which) {
     const res = await fetch('/api/keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await res.json();
     if (!res.ok) { toast('⚠️ ' + (j.error || 'No se pudo guardar')); return; }
+    if (which === 'anthropic') S.aiPause = null;
     if (which === 'anthropic') toast(j.anthropicValid ? '✓ Clave de Anthropic guardada y verificada' : '⚠️ Clave guardada, pero Anthropic la rechazó. Revisa que esté completa y que tengas saldo.');
     else toast('✓ Guardado');
     S.cfg = await D.getConfig();
@@ -1124,7 +1140,7 @@ async function updateAction(kind) {
 
 // ---------- eventos ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
+  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-airetry],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
   if (!t) return;
   if (t.dataset.tabLink || t.dataset.tab) { e.preventDefault(); go(t.dataset.tabLink || t.dataset.tab, t.dataset.moreTab); return; }
   if (t.dataset.slip) { e.preventDefault(); e.stopPropagation(); const [k, pick] = t.dataset.slip.split('|'); addSelection(k, pick, { stake: Number(t.dataset.aistake) || 0 }); return; }
@@ -1147,6 +1163,7 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.placed) { B.markPlacedReal(t.dataset.placed); toast('✓ Marcada como colocada'); render(); return; }
   if (t.dataset.savekey) { saveKey(t.dataset.savekey); return; }
   if (t.dataset.update) { updateAction(t.dataset.update); return; }
+  if (t.dataset.airetry !== undefined) { S.aiPause = null; toast('Reintentando la IA…'); refreshAll(); return; }
   if (t.dataset.takeover !== undefined) { B.updateSettings({ autopilot: true, autopilotDevice: B.deviceId }); B.log('Piloto automático movido a este dispositivo'); render(); refreshAll(); return; }
   if (t.dataset.copydiag !== undefined) {
     const txt = `BetBot MX ${S.version?.version || ''} · ${navigator.userAgent} · IA: ${S.cfg.hasAnthropic ? 'sí' : 'no'} · Odds API: ${S.cfg.hasOdds ? 'sí' : 'no'} · celular: ${S.cfg.lan ? 'sí' : 'no'}`;
@@ -1162,7 +1179,7 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.aiRun) {
     const k = t.dataset.aiRun, a = S.analysis.get(k);
     S.ai.set(k, 'loading'); renderSheet();
-    try { await runAI(a); } catch (err) { S.ai.set(k, { error: err.message }); }
+    try { await runAI(a); S.aiPause = null; } catch (err) { S.ai.set(k, { error: err.message }); if (err?.code === 'sin_saldo' || err?.code === 'clave_invalida') handleAIError(err); }
     if (S.open === k) renderSheet();
     return;
   }
