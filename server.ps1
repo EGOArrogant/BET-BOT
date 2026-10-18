@@ -150,6 +150,7 @@ function Get-LocalVersion {
 
 # ---------- arranque: intenta abrir para la red local; si no hay permiso, solo esta PC ----------
 $script:lanEnabled = $false
+$script:rebind = $false
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://+:$Port/")
 try { $listener.Start(); $script:lanEnabled = $true }
@@ -260,6 +261,16 @@ try {
         $out = @{ lan = $script:lanEnabled; ips = @(Get-LanIps); port = $Port; token = $token }
         Send-Text $ctx ($out | ConvertTo-Json -Compress)
       }
+      elseif ($path -eq '/api/phone/enable' -and $req.HttpMethod -eq 'POST') {
+        # Ejecuta habilitar-telefono.bat como administrador: Windows muestra su aviso (UAC) y TU decides si lo aceptas.
+        if (-not $req.IsLocal) { Send-Text $ctx '{"error":"solo desde la PC"}' 'application/json' 403; continue }
+        if ($script:lanEnabled) { Send-Text $ctx '{"ok":true,"lan":true}'; continue }
+        $bat = Join-Path $root 'habilitar-telefono.bat'
+        try { Start-Process -FilePath $bat -ArgumentList 'auto' -Verb RunAs -Wait -WindowStyle Hidden }
+        catch { Send-Text $ctx '{"error":"Se cancelo el permiso de administrador. Vuelve a intentarlo y presiona Si en el aviso de Windows."}' 'application/json' 400; continue }
+        Send-Text $ctx '{"ok":true,"rebinding":true}'
+        $script:rebind = $true
+      }
       elseif ($path -eq '/api/keys' -and $req.HttpMethod -eq 'POST') {
         if (-not $req.IsLocal) { Send-Text $ctx '{"error":"Las claves solo se pueden cambiar desde la PC"}' 'application/json' 403; continue }
         $b = $utf8.GetString((Read-Body $req)) | ConvertFrom-Json
@@ -341,6 +352,20 @@ try {
     catch {
       Write-Host "Error en $path : $($_.Exception.Message)"
       try { Send-Text $ctx (@{ error = $_.Exception.Message } | ConvertTo-Json -Compress) 'application/json' 500 } catch {}
+    }
+    # Tras activar el celular, el servidor se vuelve a abrir para la red local sin tener que reiniciarlo.
+    if ($script:rebind) {
+      $script:rebind = $false
+      $listener.Stop(); $listener.Close()
+      $listener = New-Object System.Net.HttpListener
+      $listener.Prefixes.Add("http://+:$Port/")
+      try { $listener.Start(); $script:lanEnabled = $true; Write-Host "Acceso desde el celular: ACTIVO" -ForegroundColor Cyan }
+      catch {
+        $listener = New-Object System.Net.HttpListener
+        $listener.Prefixes.Add("http://localhost:$Port/")
+        $listener.Start()
+        Write-Host "No se pudo abrir para la red local; sigue solo en esta PC." -ForegroundColor Yellow
+      }
     }
   }
 }

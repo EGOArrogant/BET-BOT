@@ -30,4 +30,6 @@ echo.
 echo Importante: tu red WiFi debe estar marcada como "Privada" en Windows
 echo (Configuracion ^> Red e Internet ^> Wi-Fi ^> tu red ^> Tipo de perfil: Privada).
 echo.
+rem Cuando lo lanza la app (boton "Activar"), termina solo sin esperar una tecla.
+if /i "%~1"=="auto" exit /b 0
 pause

@@ -370,6 +370,13 @@ button.pill { border: 0; cursor: pointer; }
 .notif.unread { background: color-mix(in srgb, var(--blue) 10%, transparent); }
 .notif .ni { width: 34px; height: 34px; border-radius: 10px; background: var(--fill); display: grid; place-items: center; flex: none; font-size: 17px; }
 .notif .nt { font-weight: 600; font-size: 14px; }
+.notif-row { display: flex; align-items: center; gap: 4px; }
+.notif-row .notif { flex: 1; min-width: 0; }
+.notif-row.read .notif { opacity: 0.55; padding-top: 8px; padding-bottom: 8px; }
+.notif-row.read .notif .ni { width: 28px; height: 28px; font-size: 14px; }
+.notif-row.read .notif .nt { font-weight: 500; }
+.mark-read { width: 34px; height: 34px; border-radius: 50%; border: 0; background: var(--fill); color: var(--green); font-size: 16px; font-weight: 700; cursor: pointer; flex: none; }
+.mark-read:hover { background: color-mix(in srgb, var(--green-fill) 25%, transparent); }
 .hidden { display: none !important; }
 .flex { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .spacer { flex: 1; }

@@ -28,6 +28,7 @@ export const DEFAULT_STATE = () => ({
   books: DEFAULT_BOOKS(),
   bookQuotes: [],
   slip: [], // boleto: selecciones por apostar (compartido entre PC y celular)
+  shadow: [], // apuestas sombra: todo lo que el bot habría apostado, para aprender sin arriesgar la banca
 });
 
 let state = DEFAULT_STATE();
@@ -82,6 +83,7 @@ function merge(base, s) {
   return {
     ...base, ...s, settings: { ...base.settings, ...(s.settings || {}) }, weights: { ...base.weights, ...(s.weights || {}) },
     books: { ...base.books, ...(s.books || {}) }, slip: Array.isArray(s.slip) ? s.slip : [],
+    shadow: Array.isArray(s.shadow) ? s.shadow : [],
   };
 }
 
@@ -141,7 +143,7 @@ export function log(msg, kind = 'info') {
 export function updateSettings(patch) { state.settings = { ...state.settings, ...patch }; save(); }
 
 export function resetBank(amount = 2000) {
-  const keep = { settings: state.settings, weights: state.weights, predictions: state.predictions, books: state.books, bookQuotes: state.bookQuotes, elo: state.elo, eloSeen: state.eloSeen };
+  const keep = { settings: state.settings, weights: state.weights, predictions: state.predictions, books: state.books, bookQuotes: state.bookQuotes, elo: state.elo, eloSeen: state.eloSeen, shadow: state.shadow };
   state = { ...DEFAULT_STATE(), ...keep, startBankroll: amount, bankroll: amount, history: [{ t: Date.now(), bankroll: amount }] };
   log(`Banca reiniciada a $${amount} MXN`);
 }
@@ -256,6 +258,73 @@ export function settleWithEvents(events) {
   if (changed) { state.history.push({ t: Date.now(), bankroll: equityNow() }); save(); }
   return changed;
 }
+
+// ---------- aprendizaje sin IA: apuestas sombra ----------
+// Cada selección con valor (antes del partido) se registra como si se apostara 1 unidad, sin tocar la banca.
+// Al terminar el partido se califica. Con suficientes resultados, el bot sabe qué "segmentos"
+// (deporte + mercado + rango de momio) le dan ganancia y cuáles no, y el piloto automático evita los malos.
+export const oddsBucket = (o) => (o < 2 ? 'menos de 2.00' : o < 3 ? '2.00 a 2.99' : o < 5 ? '3.00 a 4.99' : '5.00 o más');
+export const segKey = (sport, market, odds) => `${sport}|${market}|${oddsBucket(odds)}`;
+const SEG_MIN = 30; // resultados mínimos antes de juzgar un segmento
+
+export function recordShadow(ev, sel) {
+  if (ev.state !== 'pre' || !sel.odds || !sel.value) return false;
+  if (state.shadow.some((s) => s.eventId === ev.id && s.market === sel.market && s.pick === sel.pick)) return false;
+  state.shadow.push({
+    eventId: ev.id, leagueId: ev.leagueId, sport: ev.sport, eventDate: ev.date, name: ev.name,
+    market: sel.market, pick: sel.pick, line: sel.line ?? null, label: sel.label,
+    odds: sel.odds, p: sel.p, ev: sel.ev, seg: segKey(ev.sport, sel.market, sel.odds), t: Date.now(), status: 'pending',
+  });
+  if (state.shadow.length > 4000) state.shadow = state.shadow.slice(-4000);
+  return true;
+}
+
+export function settleShadow(events) {
+  const byId = new Map(events.map((e) => [e.id, e]));
+  let changed = false;
+  for (const s of state.shadow) {
+    if (s.status !== 'pending') continue;
+    const ev = byId.get(s.eventId);
+    if (!ev || !ev.completed) continue;
+    const r = resultOf(s, ev);
+    if (!r) continue;
+    s.status = r;
+    s.profit = r === 'won' ? s.odds - 1 : r === 'lost' ? -1 : 0;
+    const close = s.market === 'Goles' ? (ev.odds?.total?.line === s.line ? ev.odds.total[s.pick] : null) : ev.odds?.[s.pick];
+    if (close) s.closingOdds = close;
+    changed = true;
+  }
+  if (changed) save();
+  return changed;
+}
+
+export function segmentStats() {
+  const out = {};
+  for (const s of state.shadow) {
+    const o = (out[s.seg] ||= { seg: s.seg, sport: s.sport, market: s.market, bucket: oddsBucket(s.odds), n: 0, wins: 0, profit: 0, clvSum: 0, clvN: 0, pending: 0 });
+    if (s.status === 'pending') { o.pending++; continue; }
+    if (s.status === 'void') continue;
+    o.n++; if (s.status === 'won') o.wins++; o.profit += s.profit;
+    if (s.closingOdds) { o.clvSum += s.odds / s.closingOdds - 1; o.clvN++; }
+  }
+  for (const o of Object.values(out)) {
+    o.roi = o.n ? o.profit / o.n : null;
+    o.clv = o.clvN ? o.clvSum / o.clvN : null;
+    o.status = segmentStatusFrom(o);
+  }
+  return out;
+}
+function segmentStatusFrom(o) {
+  if (o.n < SEG_MIN) return 'aprendiendo';
+  if (o.roi < -0.05) return 'bloqueado';
+  if (o.roi > 0.03) return 'confiable';
+  return 'en prueba';
+}
+export function segmentStatus(sport, market, odds) {
+  const o = segmentStats()[segKey(sport, market, odds)];
+  return o ? o.status : 'aprendiendo';
+}
+export const pendingShadows = () => state.shadow.filter((s) => s.status === 'pending');
 
 // ---------- aprendizaje ----------
 // Se guarda la predicción previa al partido (modelo y mercado). Al terminar, se compara la

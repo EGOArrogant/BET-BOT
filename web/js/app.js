@@ -59,6 +59,8 @@ function analyze(ev, table, winProb) {
   const sels = M.selections(ev, model, st.settings, st.weights);
   const golden = M.goldenOpportunities(ev, model, sels);
   B.recordPrediction(ev, model, sels);
+  // Aprendizaje sin IA: registra lo que el bot habría apostado (sin tocar la banca).
+  if (ev.state === 'pre' && model.known) for (const s of sels) if (s.value) B.recordShadow(ev, s);
   const a = { ev, model, sels, golden };
   S.analysis.set(key(ev), a);
   return a;
@@ -90,6 +92,7 @@ async function refreshAll() {
   if (firstLoad) S.lastUpdate = Date.now();
   const events = allEvents();
   B.settleWithEvents(events);
+  B.settleShadow(events);
   B.learnFromEvents(events);
   await settleOld();
   // El piloto automático solo corre en el dispositivo donde se activó (evita apuestas duplicadas).
@@ -105,11 +108,16 @@ async function refreshAll() {
 // Liquida apuestas de partidos que ya no aparecen en el scoreboard actual.
 async function settleOld() {
   const loaded = new Set(allEvents().filter((e) => e.completed).map((e) => e.id));
-  const pend = B.pendingBets().filter((b) => !loaded.has(b.eventId) && Date.now() - new Date(b.eventDate).getTime() > 3 * 3600000);
+  const old = (x) => !loaded.has(x.eventId) && Date.now() - new Date(x.eventDate).getTime() > 3 * 3600000;
+  // Apuestas reales y apuestas sombra de partidos que ya no aparecen en la lista actual.
+  const pend = [...B.pendingBets().filter(old), ...B.pendingShadows().filter(old)];
   const groups = new Map();
-  for (const b of pend) groups.set(b.leagueId + '|' + b.eventDate.slice(0, 10), b);
-  for (const b of groups.values()) {
-    try { B.settleWithEvents(await D.getEventsAround(D.leagueById(b.leagueId), b.eventDate)); } catch (e) { console.warn('liquidación', e); }
+  for (const b of pend) groups.set(b.leagueId + '|' + String(b.eventDate).slice(0, 10), b);
+  for (const b of [...groups.values()].slice(0, 12)) {
+    try {
+      const evs = await D.getEventsAround(D.leagueById(b.leagueId), b.eventDate);
+      B.settleWithEvents(evs); B.settleShadow(evs);
+    } catch (e) { console.warn('liquidación', e); }
   }
 }
 
@@ -129,12 +137,14 @@ async function autopilot() {
   const st = B.getState(), s = st.settings;
   let room = s.maxBetsPerDay - B.betsToday();
   if (room <= 0) return;
+  const segs = B.segmentStats();
   const cands = [];
   for (const a of allAnalyses()) {
     if (a.ev.state !== 'pre' || !a.model.known || B.hasBetOn(a.ev.id)) continue;
     const hrs = (new Date(a.ev.date) - Date.now()) / 3600000;
     if (hrs > 36 || hrs < 0.05) continue;
-    const best = a.sels.filter((x) => x.value).sort((x, y) => y.ev - x.ev)[0];
+    // Lo aprendido con las apuestas sombra: no apuesta en segmentos que han dado pérdidas.
+    const best = a.sels.filter((x) => x.value && segs[B.segKey(a.ev.sport, x.market, x.odds)]?.status !== 'bloqueado').sort((x, y) => y.ev - x.ev)[0];
     if (best) cands.push({ a, sel: best });
   }
   cands.sort((x, y) => y.sel.ev - x.sel.ev);
@@ -246,7 +256,7 @@ function go(tab, moreTab) {
 function renderChrome() {
   const st = B.getState();
   const slipN = st.slip.length, toPlaceN = B.pendingBets().filter((b) => !b.placedReal).length;
-  const unread = S.notifs.filter((n) => n.t > notifSeen).length;
+  const unread = S.notifs.filter((n) => !isRead(n)).length;
   const badge = (id) => (id === 'bet' && slipN + toPlaceN ? `<span class="badge">${slipN + toPlaceN}</span>` : '');
   const sub = (sec) => (S.tab === sec ? `<div class="side-sub">${D.sectionLeagues(sec).map((l) => {
     const live = (S.events.get(l.id) || []).filter((e) => e.state === 'in').length;
@@ -264,6 +274,7 @@ function renderChrome() {
   $('#last-update').textContent = S.lastUpdate ? new Date(S.lastUpdate).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }) : '—';
   $('#bell-count').textContent = unread ? (unread > 9 ? '9+' : unread) : '';
   $('#bell-count').hidden = !unread;
+  $('#qr-btn').hidden = !S.cfg.local; // el QR se genera desde la PC
   const fab = $('#slip-fab');
   fab.hidden = S.tab === 'bet' || !slipN;
   $('#slip-fab-count').textContent = slipN;
@@ -312,6 +323,8 @@ function botWidget() {
     </div>
     ${aiPaused() ? `<div class="warn mt"><b>IA en pausa</b> hasta las ${new Date(S.aiPause.until).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}: ${esc(S.aiPause.msg)}${s.aiConfirm ? ' Mientras tanto, el piloto automático no apuesta (espera la confirmación de la IA).' : ''}
       <div class="flex mt">${S.aiPause.code === 'sin_saldo' ? '<a class="btn small" href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener">Recargar saldo ↗</a>' : ''}<button class="btn small" data-airetry>Reintentar ahora</button></div></div>` : ''}
+    ${(() => { const segs = Object.values(B.segmentStats()); const blocked = segs.filter((o) => o.status === 'bloqueado').length, good = segs.filter((o) => o.status === 'confiable').length;
+      return `<div class="row" style="padding:10px 0 0"><div class="icon-sq" style="background:var(--teal)">🧠</div><div class="grow"><b>Aprendizaje sin IA</b><div class="meta">${st.shadow.length} apuestas sombra · ${good} segmentos confiables · ${blocked} bloqueados${aiReady() ? '' : ' · funciona sin créditos de Anthropic'}</div></div><button class="btn small" data-tab="bank">Ver</button></div>`; })()}
     <div class="note mt">Kelly ${pct(s.kellyFraction)} · tope ${pct(s.maxStakePct)} por apuesta · Momios extra: ${S.cfg.hasOdds ? 'The Odds API ✓' : 'no configurado'}</div>
   </div>`;
 }
@@ -493,11 +506,35 @@ function viewBank() {
   </div>
   <div class="section-title">Apuestas <div class="segmented"><button data-banktab="pending" class="${S.bankTab === 'pending' ? 'active' : ''}">Pendientes (${B.pendingBets().length})</button><button data-banktab="history" class="${S.bankTab === 'history' ? 'active' : ''}">Historial</button></div></div>
   <div class="widget glass">${bets.length ? betsTable(bets) : '<div class="empty">Nada por aquí todavía</div>'}</div>
-  <div class="section-title">Aprendizaje del bot <small>Precisión del modelo frente al mercado (Brier: menor es mejor)</small></div>
+  ${shadowSection()}
+  <div class="section-title">Precisión del modelo <small>Frente al mercado (Brier: menor es mejor)</small></div>
   <div class="widget glass"><table class="t"><thead><tr><th>Deporte</th><th class="num">Partidos evaluados</th><th class="num">Acierto del favorito</th><th class="num">Brier modelo</th><th class="num">Brier mercado</th><th class="num">Peso del modelo</th></tr></thead><tbody>
     ${Object.keys(st.weights).map((s) => { const x = L[s]; return `<tr><td>${D.SPORT_ICON[s]} ${D.SPORT_NAME[s]}</td><td class="num">${x?.n || 0}</td><td class="num">${pct(x?.hitRate)}</td><td class="num">${x ? x.bm.toFixed(3) : '—'}</td><td class="num">${x?.bk != null ? x.bk.toFixed(3) : '—'}</td><td class="num"><b>${pct(st.weights[s])}</b></td></tr>`; }).join('')}
   </tbody></table><div class="note mt">El bot guarda su predicción de cada partido antes de que empiece. Con 15 partidos terminados o más en un deporte, ajusta cuánto confía en su modelo frente al mercado. Así aprende sin arriesgar dinero.</div></div>
   <div class="section-title">Actividad</div><div class="widget glass">${logList(40)}</div>`;
+}
+
+// Aprendizaje sin IA: resultados de las apuestas sombra por segmento.
+function shadowSection() {
+  const st = B.getState();
+  const segs = Object.values(B.segmentStats()).sort((a, b) => b.n - a.n || b.pending - a.pending);
+  const settled = st.shadow.filter((s) => s.status === 'won' || s.status === 'lost');
+  const profit = settled.reduce((a, s) => a + s.profit, 0);
+  const wins = settled.filter((s) => s.status === 'won').length;
+  const clvs = settled.filter((s) => s.closingOdds);
+  const clv = clvs.length ? clvs.reduce((a, s) => a + (s.odds / s.closingOdds - 1), 0) / clvs.length : null;
+  const tag = { aprendiendo: '<span class="tag">Aprendiendo</span>', 'en prueba': '<span class="tag bet">En prueba</span>', confiable: '<span class="tag value">Confiable</span>', bloqueado: '<span class="tag live">Bloqueado</span>' };
+  return `<div class="section-title">Aprendizaje sin IA <small>Apuestas sombra: lo que el bot habría apostado, sin tocar tu banca</small></div>
+  <div class="grid kpis">
+    <div class="widget glass kpi"><div class="label">Apuestas sombra</div><div class="value">${st.shadow.length}</div><div class="delta">${B.pendingShadows().length} esperando resultado</div></div>
+    <div class="widget glass kpi"><div class="label">ROI sombra</div><div class="value ${profit > 0 ? 'up' : profit < 0 ? 'down' : ''}">${settled.length ? pct(profit / settled.length, 1) : '—'}</div><div class="delta">${settled.length} calificadas · ${signed(profit, (x) => x.toFixed(1) + ' u')}</div></div>
+    <div class="widget glass kpi"><div class="label">Acierto sombra</div><div class="value">${settled.length ? pct(wins / settled.length) : '—'}</div><div class="delta">${settled.length ? `${wins} de ${settled.length}` : 'Sin resultados aún'}</div></div>
+    <div class="widget glass kpi"><div class="label">CLV sombra</div><div class="value ${clv > 0 ? 'up' : clv < 0 ? 'down' : ''}">${pct(clv, 1)}</div><div class="delta">${clvs.length} con momio de cierre</div></div>
+  </div>
+  <div class="widget glass mt">${segs.length ? `<div class="table-wrap"><table class="t"><thead><tr><th>Deporte</th><th>Mercado</th><th>Momios</th><th class="num">Calificadas</th><th class="num">Pendientes</th><th class="num">Acierto</th><th class="num">ROI</th><th class="num">CLV</th><th>Estado</th></tr></thead><tbody>
+    ${segs.map((o) => `<tr><td>${D.SPORT_ICON[o.sport] || ''} ${esc(D.SPORT_NAME[o.sport] || o.sport)}</td><td>${esc(o.market)}</td><td>${esc(o.bucket)}</td><td class="num">${o.n}</td><td class="num">${o.pending}</td><td class="num">${o.n ? pct(o.wins / o.n) : '—'}</td><td class="num ${o.roi > 0 ? 'up' : o.roi < 0 ? 'down' : ''}">${pct(o.roi, 1)}</td><td class="num">${pct(o.clv, 1)}</td><td>${tag[o.status]}</td></tr>`).join('')}
+  </tbody></table></div>` : '<div class="empty">El bot empezará a registrar apuestas sombra en cuanto detecte selecciones con valor.</div>'}
+  <div class="note mt">Cada selección con valor se registra como si se apostara 1 unidad. Con ${30} resultados o más, un segmento (deporte + mercado + rango de momio) pasa a <b>Confiable</b> si gana más de 3%, o a <b>Bloqueado</b> si pierde más de 5%. El piloto automático deja de apostar en los segmentos bloqueados. Todo esto funciona sin la IA y sin gastar créditos.</div></div>`;
 }
 
 function drawEquity() {
@@ -977,17 +1014,34 @@ function viewBet() {
 }
 
 // ---------- notificaciones ----------
+// Leídas: "todo lo anterior a notifSeen" (Marcar todas) + ids marcados uno por uno. Se guarda por dispositivo.
 const NOTIF_ICON = { bet: '🎫', won: '✅', lost: '❌', void: '↩️', ai: '✦', error: '⚠️', info: '🤖' };
-let notifSeen = 0, notifPushed = Date.now();
-try { notifSeen = Number(localStorage.getItem('betbot-notif-seen') || 0); } catch {}
+const NOTIF_KINDS = new Set(['bet', 'won', 'lost', 'void', 'error', 'ai']); // los mensajes "info" del bot no generan aviso
+let notifSeen = 0, notifPushed = Date.now(), notifRead = new Set(), notifFilter = 'unread';
+try {
+  notifSeen = Number(localStorage.getItem('betbot-notif-seen') || 0);
+  notifRead = new Set(JSON.parse(localStorage.getItem('betbot-notif-read') || '[]'));
+} catch {}
+const isRead = (n) => n.t <= notifSeen || notifRead.has(n.id);
+function markRead(ids) {
+  for (const id of ids) notifRead.add(id);
+  try { localStorage.setItem('betbot-notif-read', JSON.stringify([...notifRead].slice(-500))); } catch {}
+}
+function markAllRead() {
+  notifSeen = Date.now(); notifRead = new Set();
+  try { localStorage.setItem('betbot-notif-seen', String(notifSeen)); localStorage.setItem('betbot-notif-read', '[]'); } catch {}
+}
 
 function collectNotifications() {
   const items = [];
-  for (const l of B.getState().log.slice(0, 50)) items.push({ id: 'l' + l.t, t: l.t, icon: NOTIF_ICON[l.kind] || '🤖', title: l.msg, src: 'Bot' });
+  for (const l of B.getState().log.slice(0, 60)) {
+    if (!NOTIF_KINDS.has(l.kind)) continue;
+    items.push({ id: 'l' + l.t, t: l.t, icon: NOTIF_ICON[l.kind] || '🤖', title: l.msg, src: 'Bot', cat: 'bot' });
+  }
   for (const a of allAnalyses()) for (const g of a.golden) {
     const id = 'g' + key(a.ev) + g.type;
     if (!S.goldFirstSeen.has(id)) S.goldFirstSeen.set(id, Date.now());
-    items.push({ id, t: S.goldFirstSeen.get(id), icon: '★', title: g.title, body: g.why, open: key(a.ev), src: 'Oportunidad de Oro' });
+    items.push({ id, t: S.goldFirstSeen.get(id), icon: '★', title: g.title, body: g.why, open: key(a.ev), src: 'Oportunidad de Oro', cat: 'gold' });
   }
   items.push(...S.newsNotifs);
   S.notifs = items.sort((x, y) => y.t - x.t).slice(0, 80);
@@ -1007,17 +1061,27 @@ async function loadRelevantNews() {
   const out = [];
   for (const team of teams) {
     const items = await D.searchNews(`"${team}" lesión OR baja OR alineación OR descartado OR regresa`, 3);
-    for (const n of items) out.push({ id: 'n' + n.url, t: Date.parse(n.date) || Date.now(), icon: '📰', title: n.title, body: `${n.source} · ${team}`, url: n.url, src: 'Noticias' });
+    for (const n of items) out.push({ id: 'n' + n.url, t: Date.parse(n.date) || Date.now(), icon: '📰', title: n.title, body: `${n.source} · ${team}`, url: n.url, src: 'Noticias', cat: 'news' });
   }
   S.newsNotifs = out;
 }
 
 function renderNotifPanel() {
   const p = $('#notif-panel');
-  p.innerHTML = `<div class="flex" style="padding:16px 18px 8px"><div class="grow"><div style="font-size:20px;font-weight:700">Notificaciones</div><div class="note">Bot, Oportunidades de Oro y noticias de tus equipos</div></div><button class="close-x" data-notifclose>✕</button></div>
-    ${typeof Notification !== 'undefined' && Notification.permission === 'default' && isSecureContext ? '<div style="padding:0 18px"><button class="btn small" data-notifperm>Activar avisos del navegador</button></div>' : ''}
-    <div class="notif-list">${S.notifs.length ? S.notifs.map((n) => `<${n.url ? `a href="${esc(n.url)}" target="_blank" rel="noopener"` : 'div'} class="notif ${n.t > notifSeen ? 'unread' : ''}" ${n.open ? `data-open="${n.open}"` : ''}>
-      <div class="ni">${n.icon}</div><div class="grow"><div class="nt">${esc(n.title)}</div>${n.body ? `<div class="note">${esc(n.body)}</div>` : ''}<div class="note">${esc(n.src)} · ${new Date(n.t).toLocaleString('es-MX', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</div></div></${n.url ? 'a' : 'div'}>`).join('') : '<div class="empty">Sin notificaciones todavía</div>'}</div>`;
+  const unreadN = S.notifs.filter((n) => !isRead(n)).length;
+  const filters = [['unread', `Sin leer${unreadN ? ` (${unreadN})` : ''}`], ['all', 'Todas'], ['gold', '★ Oro'], ['news', 'Noticias'], ['bot', 'Bot']];
+  const list = S.notifs.filter((n) => (notifFilter === 'unread' ? !isRead(n) : notifFilter === 'all' ? true : n.cat === notifFilter)).slice(0, 40);
+  const item = (n) => {
+    const read = isRead(n);
+    const tag = n.url ? `a href="${esc(n.url)}" target="_blank" rel="noopener"` : 'div';
+    return `<div class="notif-row ${read ? 'read' : 'unread'}"><${tag} class="notif" data-notifread="${esc(n.id)}" ${n.open ? `data-open="${n.open}"` : ''}>
+      <div class="ni">${n.icon}</div><div class="grow"><div class="nt">${esc(n.title)}</div>${n.body && !read ? `<div class="note">${esc(n.body)}</div>` : ''}<div class="note">${esc(n.src)} · ${new Date(n.t).toLocaleString('es-MX', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</div></div></${n.url ? 'a' : 'div'}>
+      ${read ? '' : `<button class="mark-read" data-notifread="${esc(n.id)}" data-only title="Marcar como leída">✓</button>`}</div>`;
+  };
+  p.innerHTML = `<div class="flex" style="padding:16px 18px 6px"><div class="grow"><div style="font-size:20px;font-weight:700">Notificaciones</div><div class="note">Toca una para leerla · ✓ la marca como leída</div></div><button class="close-x" data-notifclose>✕</button></div>
+    <div class="flex" style="padding:0 18px 6px"><div class="segmented">${filters.map(([k, l]) => `<button data-notiffilter="${k}" class="${notifFilter === k ? 'active' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="flex" style="padding:0 18px 4px">${unreadN ? '<button class="btn small" data-notifall>✓ Marcar todas como leídas</button>' : ''}${typeof Notification !== 'undefined' && Notification.permission === 'default' && isSecureContext ? '<button class="btn small" data-notifperm>Activar avisos del navegador</button>' : ''}</div>
+    <div class="notif-list">${list.length ? list.map(item).join('') : `<div class="empty">${notifFilter === 'unread' ? '✓ Estás al día: no hay notificaciones sin leer.' : 'Sin notificaciones en esta categoría.'}</div>`}</div>`;
 }
 
 function openNotifs() {
@@ -1025,8 +1089,6 @@ function openNotifs() {
   renderNotifPanel();
   $('#notif-panel').classList.add('open');
   $('#backdrop').classList.add('open');
-  notifSeen = Date.now();
-  try { localStorage.setItem('betbot-notif-seen', String(notifSeen)); } catch {}
   renderChrome();
 }
 
@@ -1056,11 +1118,14 @@ async function loadPhone() {
   const away = `<div class="widget glass mt"><h3>¿Fuera de casa?</h3><p class="note">El QR funciona en tu misma red WiFi. Para usar el bot con datos móviles, instala <b>Tailscale</b> (gratis) en la PC y en el celular con la misma cuenta. Luego entra desde el celular a <span class="kbd">http://IP-de-Tailscale-de-tu-PC:${net.port}/?t=…</span> (el mismo enlace del QR, cambiando la IP). Así no expones tu PC a internet.</p>
     <p class="note">El bot sigue analizando mientras la PC esté encendida con <span class="kbd">iniciar.bat</span> abierto. El piloto automático corre en el dispositivo donde lo activaste.</p></div>`;
   if (!net.lan) {
-    box.innerHTML = `<div class="widget glass"><h3>Activar acceso desde el celular</h3><ol class="steps">
+    box.innerHTML = `<div class="widget glass"><h3>Activar acceso desde el celular</h3>
+      <p>Para que tu celular pueda abrir el bot, Windows necesita permitirlo una sola vez. Presiona el botón y acepta el aviso de administrador que aparecerá en esta PC.</p>
+      <button class="btn primary" data-phoneenable>📱 Activar y mostrar el código QR</button>
+      <div class="note mt">Esto permite que el bot se abra en tu red local y abre el puerto ${net.port} solo para redes <b>privadas</b> (tu casa), no en redes públicas. Para deshacerlo usa <span class="kbd">deshabilitar-telefono.bat</span>.</div>
+      <details class="mt"><summary class="note">¿No funcionó el botón? Hazlo manual</summary><ol class="steps note">
       <li>Cierra la ventana negra de BetBot MX.</li>
-      <li>En la carpeta del bot, da doble clic en <span class="kbd">habilitar-telefono.bat</span> y acepta el aviso de administrador. Solo se hace una vez.</li>
-      <li>Abre de nuevo <span class="kbd">iniciar.bat</span> y regresa aquí: aparecerá el código QR.</li></ol>
-      <div class="note">El script abre el puerto ${net.port} solo para redes privadas (tu casa). Para deshacerlo usa <span class="kbd">deshabilitar-telefono.bat</span>.</div></div>${away}`;
+      <li>En la carpeta del bot, da doble clic en <span class="kbd">habilitar-telefono.bat</span> y acepta el aviso de administrador.</li>
+      <li>Abre de nuevo <span class="kbd">iniciar.bat</span> y regresa aquí.</li></ol></details></div>${away}`;
     return;
   }
   if (!net.ips.length) { box.innerHTML = '<div class="warn">No se encontró una red WiFi o Ethernet activa.</div>' + away; return; }
@@ -1140,8 +1205,17 @@ async function updateAction(kind) {
 
 // ---------- eventos ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-airetry],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
+  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-airetry],[data-phoneenable],[data-notifread],[data-notifall],[data-notiffilter],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
   if (!t) return;
+  // Notificaciones: tocar una la marca como leída (y luego abre su partido o enlace); ✓ solo la marca.
+  if (t.dataset.notifread) {
+    markRead([t.dataset.notifread]);
+    renderChrome();
+    if (t.dataset.only !== undefined) { e.preventDefault(); e.stopPropagation(); renderNotifPanel(); return; }
+    if (!t.dataset.open) { setTimeout(renderNotifPanel, 50); return; }
+  }
+  if (t.dataset.notifall !== undefined) { markAllRead(); renderNotifPanel(); renderChrome(); toast('✓ Todas marcadas como leídas'); return; }
+  if (t.dataset.notiffilter) { notifFilter = t.dataset.notiffilter; renderNotifPanel(); return; }
   if (t.dataset.tabLink || t.dataset.tab) { e.preventDefault(); go(t.dataset.tabLink || t.dataset.tab, t.dataset.moreTab); return; }
   if (t.dataset.slip) { e.preventDefault(); e.stopPropagation(); const [k, pick] = t.dataset.slip.split('|'); addSelection(k, pick, { stake: Number(t.dataset.aistake) || 0 }); return; }
   if (t.dataset.open) { if (t.tagName !== 'A') { closeNotifs(); openMatch(t.dataset.open, t.dataset.goto || 'analysis'); } return; }
@@ -1163,6 +1237,19 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.placed) { B.markPlacedReal(t.dataset.placed); toast('✓ Marcada como colocada'); render(); return; }
   if (t.dataset.savekey) { saveKey(t.dataset.savekey); return; }
   if (t.dataset.update) { updateAction(t.dataset.update); return; }
+  if (t.dataset.phoneenable !== undefined) {
+    t.disabled = true; t.textContent = 'Esperando el permiso de Windows…';
+    try {
+      const res = await fetch('/api/phone/enable', { method: 'POST' });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'No se pudo activar');
+      toast('✓ Acceso desde el celular activado');
+      await new Promise((r) => setTimeout(r, 1500)); // el servidor se vuelve a abrir para la red local
+      S.cfg = await D.getConfig();
+    } catch (err) { toast('⚠️ ' + err.message, 6000); }
+    render();
+    return;
+  }
   if (t.dataset.airetry !== undefined) { S.aiPause = null; toast('Reintentando la IA…'); refreshAll(); return; }
   if (t.dataset.takeover !== undefined) { B.updateSettings({ autopilot: true, autopilotDevice: B.deviceId }); B.log('Piloto automático movido a este dispositivo'); render(); refreshAll(); return; }
   if (t.dataset.copydiag !== undefined) {
