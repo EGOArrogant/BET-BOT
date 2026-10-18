@@ -192,7 +192,7 @@ const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-
 const STOP = new Set(['fc', 'cf', 'club', 'de', 'the', 'afc', 'sc', 'ac', 'cd', 'ud', 'rc', 'and', 'del', 'la', 'real', 'city', 'united', 'team', 'esports', 'gaming', 'win', 'will']);
 const tokens = (s) => norm(s).split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && !STOP.has(t));
 
-function nameScore(a, b) {
+export function nameScore(a, b) {
   const ta = tokens(a), tb = new Set(tokens(b));
   let hit = 0;
   for (const t of ta) if (tb.has(t)) hit++;

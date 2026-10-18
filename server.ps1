@@ -28,7 +28,7 @@ if (-not (Test-Path $tokenPath)) {
 }
 $token = ([IO.File]::ReadAllText($tokenPath)).Trim()
 
-$proxyHosts = @('news.google.com', 'liquipedia.net', 'api.elections.kalshi.com')
+$proxyHosts = @('news.google.com', 'liquipedia.net', 'api.elections.kalshi.com', 'data-api.polymarket.com')
 # Liquipedia pide: gzip, User-Agent identificable y maximo 1 consulta "parse" cada 30 s.
 $proxyCache = @{}
 $imgCache = @{}

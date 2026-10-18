@@ -1,8 +1,12 @@
 {
-  "version": "1.5.0",
+  "version": "1.6.0",
   "date": "2026-10-18",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Nueva sección Top Polymarket: ranking de los mejores apostadores de deportes (semana, mes, histórico)",
+    "Win rate real (cuenta también las apuestas perdidas) y ROI de cada apostador, con puntaje para elegir a quién seguir",
+    "El bot sigue automáticamente a los 8 mejores y rastrea sus apuestas abiertas y cada nueva entrada (con aviso)",
+    "En tus partidos aparece 🐋 cuando los top apostadores tienen posición, y de qué lado están; la IA también lo recibe",
     "Combate: carteleras agrupadas por evento, Cartelera principal y Preliminares, filtro por división y 🏆 Solo campeonatos",
     "Peleas de título detectadas automáticamente (cinturón del campeón), estelar y coestelar marcadas",
     "Pestaña Peleadores: KO/TKO, sumisiones, decisiones, golpes, derribos, edad, estatura y alcance comparados",

@@ -32,6 +32,7 @@ export const DEFAULT_STATE = () => ({
   bookQuotes: [],
   slip: [], // boleto: selecciones por apostar (compartido entre PC y celular)
   shadow: [], // apuestas sombra: todo lo que el bot habría apostado, para aprender sin arriesgar la banca
+  smart: { follows: [], stats: {}, seen: {}, trail: [] }, // top apostadores de Polymarket que sigues y el rastro de sus entradas
 });
 
 let state = DEFAULT_STATE();
@@ -104,6 +105,7 @@ function merge(base, s) {
     ...base, ...s, settings: { ...base.settings, ...(s.settings || {}) }, weights: { ...base.weights, ...(s.weights || {}) },
     books: { ...base.books, ...(s.books || {}) }, slip: Array.isArray(s.slip) ? s.slip : [],
     shadow: Array.isArray(s.shadow) ? s.shadow : [],
+    smart: { ...base.smart, ...(s.smart || {}) },
   };
 }
 
@@ -163,7 +165,7 @@ export function log(msg, kind = 'info') {
 export function updateSettings(patch) { state.settings = { ...state.settings, ...patch }; save(); }
 
 export function resetBank(amount = 2000) {
-  const keep = { settings: state.settings, weights: state.weights, predictions: state.predictions, books: state.books, bookQuotes: state.bookQuotes, elo: state.elo, eloSeen: state.eloSeen, shadow: state.shadow };
+  const keep = { settings: state.settings, weights: state.weights, predictions: state.predictions, books: state.books, bookQuotes: state.bookQuotes, elo: state.elo, eloSeen: state.eloSeen, shadow: state.shadow, smart: state.smart };
   state = { ...DEFAULT_STATE(), ...keep, startBankroll: amount, bankroll: amount, history: [{ t: Date.now(), bankroll: amount }] };
   log(`Banca reiniciada a $${amount} MXN`);
 }
