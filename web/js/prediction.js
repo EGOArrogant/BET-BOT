@@ -64,7 +64,12 @@ async function polymarket(league, { includeResolved = false } = {}) {
     const liq = Number(e.liquidity || ml.reduce((a, m) => a + Number(m.liquidity || 0), 0)) || 0;
     const resolved = outcomes.every((o) => !(o.prob > 0 && o.prob < 1));
     if (resolved && !includeResolved) continue; // mercado ya resuelto
-    out.push({ source: 'Polymarket', title: e.title, start, outcomes, liquidity: liq, resolved, url: `https://polymarket.com/event/${e.slug}` });
+    // Mercados extra de la pelea: ¿llega a la decisión?, ¿KO/TKO?, ¿sumisión?, rondas más/menos.
+    const props = (e.markets || []).filter((m) => /go_the_distance|method_of_victory|totals/.test(m.sportsMarketType || '') && !m.closed).map((m) => {
+      const names = parseArr(m.outcomes), prices = parseArr(m.outcomePrices).map(Number);
+      return { q: m.question, type: m.sportsMarketType, names, prices, liquidity: Number(m.liquidity || 0), traded: Number(m.volume || 0) > 0 };
+    });
+    out.push({ source: 'Polymarket', title: e.title, start, outcomes, liquidity: liq, resolved, props, url: `https://polymarket.com/event/${e.slug}` });
   }
   return out;
 }
@@ -107,6 +112,30 @@ async function oddsApiFights(league) {
     if (!res.ok) return [];
     return res.json();
   });
+}
+
+// Momios de casas internacionales (The Odds API) para peleas que ya vienen de ESPN (UFC): mejor precio por peleador.
+export async function attachOddsApi(league, events) {
+  const odds = await oddsApiFights(league).catch(() => []);
+  if (!odds?.length) return;
+  const byKey = new Map();
+  for (const g of odds) {
+    const price = (name) => {
+      let best = null, book = '';
+      for (const b of g.bookmakers || []) for (const mk of b.markets || []) if (mk.key === 'h2h') for (const o of mk.outcomes) if (o.name === name && (!best || o.price > best)) { best = o.price; book = b.title; }
+      return { best, book };
+    };
+    byKey.set(fightKey(g.home_team, g.away_team), { g, price });
+  }
+  for (const ev of events) {
+    if (ev.odds) continue;
+    const hit = byKey.get(fightKey(ev.home.name, ev.away.name));
+    if (!hit) continue;
+    // La Odds API puede listar a los peleadores en otro orden: se busca por nombre.
+    const pick = (name) => { const n = [hit.g.home_team, hit.g.away_team].sort((x, y) => nameScore(name, y) - nameScore(name, x))[0]; return hit.price(n); };
+    const h = pick(ev.home.name), a = pick(ev.away.name);
+    if (h.best && a.best) ev.odds = { provider: 'The Odds API (mejor precio)', home: h.best, away: a.best, books: { home: h.book, away: a.book } };
+  }
 }
 
 export async function marketEvents(league) {
@@ -189,7 +218,7 @@ export function matchPrediction(ev, markets) {
     // Normaliza para que las probabilidades sumen 1 (quita el pequeño margen del mercado).
     const sum = h.o.prob + a.o.prob + (draw ? draw.prob : 0);
     found.push({
-      source: m.source, url: m.url, liquidity: m.liquidity,
+      source: m.source, url: m.url, liquidity: m.liquidity, title: m.title, props: m.props || [],
       home: h.o.prob / sum, away: a.o.prob / sum, draw: draw ? draw.prob / sum : null,
       askHome: h.o.ask, askAway: a.o.ask, askDraw: draw?.ask ?? null,
     });

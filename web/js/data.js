@@ -2,7 +2,7 @@
 // Todo se normaliza a un formato común de "evento" para que los modelos y la UI no dependan de la fuente.
 
 import { getEsportsEvents } from './esports.js';
-import { marketEvents } from './prediction.js';
+import { marketEvents, attachOddsApi } from './prediction.js';
 
 const ESPN = 'https://site.api.espn.com/apis/site/v2/sports';
 const ESPN_WEB = 'https://site.web.api.espn.com/apis/v2/sports';
@@ -22,7 +22,7 @@ export const LEAGUES = [
   { id: 'lmb', sport: 'baseball', name: 'Liga Mexicana de Béisbol', short: 'LMB', source: 'mlbstats', sportId: 23, leagueId: 125 },
   { id: 'atp', sport: 'tennis', name: 'ATP', short: 'ATP', path: 'tennis/atp' },
   { id: 'wta', sport: 'tennis', name: 'WTA', short: 'WTA', path: 'tennis/wta' },
-  { id: 'ufc', sport: 'mma', name: 'UFC', short: 'UFC', path: 'mma/ufc' },
+  { id: 'ufc', sport: 'mma', name: 'UFC', short: 'UFC', path: 'mma/ufc', oddsKey: 'mma_mixed_martial_arts' },
   { id: 'boxing', sport: 'boxing', name: 'Boxeo', short: 'BOX', source: 'markets', oddsKey: 'boxing_boxing' },
   { id: 'lol', sport: 'esports', game: 'lol', name: 'League of Legends', short: 'LoL', source: 'lolesports' },
   { id: 'valorant', sport: 'esports', game: 'valorant', name: 'Valorant', short: 'VAL', source: 'liquipedia', wiki: 'valorant' },
@@ -185,28 +185,76 @@ function normalizeTennis(ev, league) {
 }
 
 // UFC: cada evento de ESPN trae varias peleas; cada pelea se vuelve un "partido" (esquina roja vs azul).
+// Segmento de la cartelera según el orden (ESPN lista de la primera pelea a la estelar).
+function cardSegment(i, n) {
+  const fromEnd = n - 1 - i;
+  if (fromEnd === 0) return 'Estelar';
+  if (fromEnd === 1) return 'Coestelar';
+  if (fromEnd <= 4) return 'Cartelera principal';
+  return 'Preliminares';
+}
+
 function normalizeFights(ev, league) {
-  return (ev.competitions || []).filter((c) => (c.competitors || []).length === 2).map((comp) => {
+  const comps = (ev.competitions || []).filter((c) => (c.competitors || []).length === 2);
+  return comps.map((comp, i) => {
     const sorted = [...comp.competitors].sort((a, b) => (a.order || 0) - (b.order || 0));
+    const weightRaw = comp.type?.abbreviation || comp.type?.text || '';
     const side = (c) => {
       const a = c.athlete || {};
+      const aid = a.id || c.id;
       const rec = c.records?.[0]?.summary || '';
       const [w, l] = rec.split('-').map(Number);
+      const belts = [].concat(a.accolades || []).filter((x) => x && /belt|title/i.test(`${x.type} ${x.name}`)).map((x) => x.name);
       return {
-        id: 'f' + (a.id || c.id), name: a.displayName || '¿?', abbr: (a.shortName || a.displayName || '').split(' ').slice(-1)[0],
-        logo: a.id ? `https://a.espncdn.com/i/headshots/mma/players/full/${a.id}.png` : a.flag?.href || '',
+        id: 'f' + aid, athleteId: aid, name: a.displayName || '¿?', abbr: (a.shortName || a.displayName || '').split(' ').slice(-1)[0],
+        logo: aid ? `https://a.espncdn.com/i/headshots/mma/players/full/${aid}.png` : a.flag?.href || '', flagUrl: a.flag?.href || '',
         score: null, form: '', record: rec, recW: Number.isFinite(w) ? w : null, recL: Number.isFinite(l) ? l : null,
-        winner: c.winner === true, seed: '', flag: a.flag?.alt || '', linescores: [],
+        winner: c.winner === true, seed: '', flag: a.flag?.alt || '', linescores: [], belts,
       };
     };
     const h = side(sorted[0]), a = side(sorted[1]);
+    const rounds = comp.format?.regulation?.periods || 3;
+    // Pelea de campeonato: algún peleador tiene el cinturón de esta división (o interino) y la pelea es a 5 rounds.
+    const wr = weightRaw.toLowerCase();
+    const beltHere = wr && [...h.belts, ...a.belts].find((b) => { const bl = b.toLowerCase(); return bl.includes(`ufc ${wr} title`) || bl.includes(`interim ${wr} title`); });
+    const titleFight = rounds === 5 && !!beltHere;
     const st = parseStatus(comp.status);
     return {
       id: comp.id, leagueId: league.id, sport: 'mma', name: `${h.name} vs ${a.name}`, date: comp.date || ev.date, ...st,
       home: h, away: a, odds: null, venue: comp.venue?.fullName || ev.name, tournament: ev.name,
-      round: weightEs(comp.type?.abbreviation || comp.type?.text), rounds: comp.format?.regulation?.periods || 3,
+      round: weightEs(weightRaw), weightRaw, women: /women/i.test(weightRaw), rounds,
+      segment: cardSegment(i, comps.length), order: i, titleFight, belt: titleFight ? beltEs(beltHere) : '',
     };
   });
+}
+function beltEs(b) {
+  let s = String(b || '').replace(/^UFC /, '').replace(/ Title$/, '');
+  const interim = s.includes('Interim '), women = s.includes("Women's ");
+  s = s.replace('Interim ', '').replace("Women's ", '');
+  return `Título${interim ? ' interino' : ''} ${WEIGHT_ES[s] || s}${women ? ' femenil' : ''}`;
+}
+
+// Perfil y estadísticas de un peleador (ESPN): KO/TKO, sumisiones, decisiones, golpes, derribos, físico.
+export async function getFighter(athleteId) {
+  const [prof, stats, recs] = await Promise.allSettled([
+    getJSON(`https://site.web.api.espn.com/apis/common/v3/sports/mma/athletes/${athleteId}`, 3_600_000),
+    getJSON(`https://sports.core.api.espn.com/v2/sports/mma/athletes/${athleteId}/statistics`, 3_600_000),
+    getJSON(`https://sports.core.api.espn.com/v2/sports/mma/athletes/${athleteId}/records`, 3_600_000),
+  ]);
+  const p = prof.status === 'fulfilled' ? prof.value.athlete || {} : {};
+  const s = {};
+  if (stats.status === 'fulfilled') for (const c of stats.value.splits?.categories || []) for (const x of c.stats || []) s[x.name] = x.value;
+  const r = {};
+  if (recs.status === 'fulfilled') for (const x of recs.value.items?.[0]?.stats || []) r[x.name] = x.value;
+  return {
+    name: p.displayName, nickname: p.nickname || '', age: p.age, height: p.displayHeight, reach: p.displayReach, weight: p.displayWeight,
+    stance: p.stance?.text || '', style: p.displayFightingStyle || '', team: p.association?.name || '', country: p.citizenship || p.flag?.alt || '',
+    headshot: p.headshot?.href || '',
+    wins: r.wins, losses: r.losses, draws: r.draws, kos: r.tkos, subs: r.submissions, koLosses: r.tkoLosses, subLosses: r.submissionLosses,
+    titleWins: r.titleWins, titleLosses: r.titleLosses,
+    koPct: s.koPercentage ?? s.tkoPercentage, decPct: s.decisionPercentage, subAvg: s.submissionAvg,
+    strikeLPM: s.strikeLPM, strikeAcc: s.strikeAccuracy, tdAvg: s.takedownAvg, tdAcc: s.takedownAccuracy,
+  };
 }
 
 async function espnScoreboard(league, dateStr) {
@@ -262,7 +310,9 @@ export async function getEvents(league, days = 3) {
       const d = new Date(new Date(c.startDate).getTime() - 5 * 3600000); // fecha del evento en hora de EE. UU.
       try { for (const f of await espnScoreboard(league, ymd(d))) out.set(f.id, f); } catch {}
     }
-    return [...out.values()].sort((a, b) => new Date(a.date) - new Date(b.date));
+    const fights = [...out.values()].sort((a, b) => new Date(a.date) - new Date(b.date));
+    await attachOddsApi(league, fights.filter((f) => f.state !== 'post')); // momios de casas (si tienes clave)
+    return fights;
   }
   const now = new Date();
   if (league.source === 'mlbstats') {
@@ -431,8 +481,10 @@ export async function getLeagueNews(league) {
   } catch { return []; }
 }
 
-export async function searchNews(query, max = 12) {
-  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query + ' when:7d')}&hl=es-419&gl=MX&ceid=MX:es-419`;
+export async function searchNews(query, max = 12, lang = 'es') {
+  // lang 'en' sirve para opiniones de especialistas en inglés (MMA Junkie, MMA Fighting, Sherdog...).
+  const loc = lang === 'en' ? 'hl=en-US&gl=US&ceid=US:en' : 'hl=es-419&gl=MX&ceid=MX:es-419';
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query + ' when:14d')}&${loc}`;
   const key = 'news:' + url;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.t < 300_000) return hit.v;

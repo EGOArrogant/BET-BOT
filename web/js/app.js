@@ -44,7 +44,7 @@ function parseOddsInput(v) {
 
 // ---------- estado de la app ----------
 const S = {
-  cfg: {}, tab: 'home', secLeague: { soccer: 'all', sports: 'all', combat: 'all', esports: 'all' }, matchFilter: 'upcoming',
+  cfg: {}, tab: 'home', secLeague: { soccer: 'all', sports: 'all', combat: 'all', esports: 'all' }, combatDiv: 'all', combatTitle: false, fighters: new Map(), matchFilter: 'upcoming',
   events: new Map(), tables: new Map(), analysis: new Map(), summaries: new Map(), ai: new Map(), oddsApi: new Map(),
   lastUpdate: null, scanning: false, open: null, sheetTab: 'analysis',
   moreTab: 'tables', tablesLeague: 'uefa.champions', newsLeague: 'mex.1', bankTab: 'pending', betSource: 'all', newsQuery: '',
@@ -255,6 +255,12 @@ async function buildContext(a) {
     local: { nombre: a.ev.home.name, tabla: table.get(String(a.ev.home.id)) || null, forma: a.ev.home.form, record: a.ev.home.record, sets: a.ev.home.linescores },
     visitante: { nombre: a.ev.away.name, tabla: table.get(String(a.ev.away.id)) || null, forma: a.ev.away.form, record: a.ev.away.record, sets: a.ev.away.linescores },
     momios_referencia: a.ev.odds,
+    pelea: a.ev.sport === 'mma' || a.ev.sport === 'boxing' ? {
+      evento: a.ev.tournament, division: a.ev.round, rounds: a.ev.rounds, lugar_en_cartelera: a.ev.segment, campeonato: a.ev.titleFight ? a.ev.belt : 'no',
+      peleador_1: { nombre: a.ev.home.name, record: a.ev.home.record, pais: a.ev.home.flag, cinturones: a.ev.home.belts, estadisticas: a.ev.home.athleteId ? await fighterData(a.ev.home) : null },
+      peleador_2: { nombre: a.ev.away.name, record: a.ev.away.record, pais: a.ev.away.flag, cinturones: a.ev.away.belts, estadisticas: a.ev.away.athleteId ? await fighterData(a.ev.away) : null },
+      mercados_de_metodo: (a.ev.pm?.sources || []).flatMap((s) => (s.props || []).map((p) => ({ pregunta: p.q, si: p.prices[0], operado: p.traded }))),
+    } : undefined,
     mercados_prediccion: a.ev.pm ? { prob_local: a.ev.pm.home, prob_visitante: a.ev.pm.away, prob_empate: a.ev.pm.draw, fuentes: a.ev.pm.sources.map((s) => ({ fuente: s.source, liquidez_usd: Math.round(s.liquidity || 0), local: s.home, visitante: s.away, empate: s.draw })) } : null,
     modelo: { previo: a.model.pre, en_vivo: a.model.live, goles_esperados: a.model.lh ? { local: a.model.lh, visitante: a.model.la } : undefined, peso_modelo: st.weights[a.ev.sport] },
     selecciones: a.sels.map((s) => ({ mercado: s.market, seleccion: s.pick, texto: s.label, linea: s.line, p_modelo: s.pModel, p_mercado: s.pMarket, p_final: s.p, momio_ref: s.odds, ev: s.ev, momio_minimo: s.minOdds })),
@@ -366,7 +372,7 @@ function render() {
   if (typingInView()) { S.pendingRender = true; return; }
   S.pendingRender = false;
   const v = $('#view');
-  const views = { home: viewHome, soccer: () => viewSection('soccer'), sports: () => viewSection('sports'), esports: () => viewSection('esports'), combat: () => viewSection('combat'), bet: viewBet, gold: viewGold, bank: viewBank, news: viewNews, more: viewMore };
+  const views = { home: viewHome, soccer: () => viewSection('soccer'), sports: () => viewSection('sports'), esports: () => viewSection('esports'), combat: viewCombat, bet: viewBet, gold: viewGold, bank: viewBank, news: viewNews, more: viewMore };
   v.innerHTML = views[S.tab]();
   labelTables(v);
   if (S.tab === 'home' || S.tab === 'bank') drawEquity();
@@ -469,6 +475,20 @@ function teamLine(ev, side) {
 
 function tagsFor(a) {
   const t = [];
+  const ev = a.ev;
+  if (ev.sport === 'mma' || ev.sport === 'boxing') {
+    // Distintivos de pelea: título, lugar en la cartelera, división y rondas.
+    if (ev.titleFight) t.push(`<span class="tag title-fight">🏆 ${esc(ev.belt || 'Pelea de campeonato')}</span>`);
+    if (ev.segment === 'Estelar') t.push('<span class="tag seg-main">⭐ Estelar</span>');
+    else if (ev.segment === 'Coestelar') t.push('<span class="tag seg-co">Coestelar</span>');
+    if (ev.round) t.push(`<span class="tag div-tag" style="--h:${(divRank(ev.round) * 37) % 360}">${esc(ev.round)}</span>`);
+    if (ev.rounds === 5 && !ev.titleFight) t.push('<span class="tag">5 rounds</span>');
+    if (a.golden.length) t.push('<span class="tag gold">★ Oro</span>');
+    const vv = a.sels.filter((s) => s.value);
+    if (vv.length && ev.state === 'pre') t.push(`<span class="tag value">Valor ${pct(Math.max(...vv.map((s) => s.ev)), 1)}</span>`);
+    if (B.hasBetOn(ev.id)) t.push('<span class="tag bet">Apostado</span>');
+    return t.join('');
+  }
   if (a.golden.length) t.push('<span class="tag gold">★ Oro</span>');
   const v = a.sels.filter((s) => s.value);
   if (v.length && a.ev.state === 'pre') t.push(`<span class="tag value">Valor ${pct(Math.max(...v.map((s) => s.ev)), 1)}</span>`);
@@ -532,6 +552,55 @@ function viewSection(sec) {
     <button data-mfilter="finished" class="${S.matchFilter === 'finished' ? 'active' : ''}">Finalizados</button></div>`}
     <span class="note">${note}</span></div>
   ${groups.length ? groups.map(({ l, items }) => `<div class="league-block glass">${head(l, items)}${items.slice(0, 40).map(matchRow).join('')}</div>`).join('') : empty}`;
+}
+
+// ---------- Combate: carteleras, divisiones y peleas de título ----------
+const DIV_ORDER = ['Peso paja', 'Peso mosca', 'Peso gallo', 'Peso pluma', 'Peso ligero', 'Peso wélter', 'Peso medio', 'Peso semipesado', 'Peso pesado'];
+const divRank = (d) => { const base = String(d || '').replace(' femenil', ''); const i = DIV_ORDER.indexOf(base); return (i < 0 ? 50 : i) + (String(d).includes('femenil') ? 20 : 0); };
+const SEG_RANK = { Estelar: 0, Coestelar: 1, 'Cartelera principal': 2, Preliminares: 3 };
+
+function viewCombat() {
+  const leagues = D.sectionLeagues('combat');
+  const sel = S.secLeague.combat || 'all';
+  const all = allAnalyses().filter((a) => a.ev.sport === 'mma' || a.ev.sport === 'boxing');
+  let list = sel === 'all' ? all : sel === 'live' ? all.filter((a) => a.ev.state === 'in') : all.filter((a) => a.ev.leagueId === sel);
+  if (sel !== 'live') list = list.filter((a) => (S.matchFilter === 'finished' ? a.ev.state === 'post' : a.ev.state !== 'post'));
+  const divisions = [...new Set(list.map((a) => a.ev.round).filter(Boolean))].sort((x, y) => divRank(x) - divRank(y));
+  const titles = list.filter((a) => a.ev.titleFight).length;
+  if (S.combatDiv !== 'all') list = list.filter((a) => a.ev.round === S.combatDiv);
+  if (S.combatTitle) list = list.filter((a) => a.ev.titleFight);
+  // Agrupa por evento (UFC 333...) o, en boxeo, por día.
+  const groupKey = (a) => (a.ev.sport === 'mma' ? a.ev.tournament : `Boxeo · ${new Date(a.ev.date).toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'short' })}`);
+  const groups = new Map();
+  for (const a of list) { const k = groupKey(a); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(a); }
+  const ordered = [...groups.entries()].sort((x, y) => new Date(x[1][0].ev.date) - new Date(y[1][0].ev.date));
+  const chip = (attr, val, label, active) => `<button class="chip glass ${active ? 'active' : ''}" ${attr}="${val}">${label}</button>`;
+  const liveN = all.filter((a) => a.ev.state === 'in').length;
+  const head = `<div class="chips">${chip('data-secleague', 'combat|all', 'Todas', sel === 'all')}${chip('data-secleague', 'combat|live', `<span class="dot live"></span> En vivo <span class="count">${liveN}</span>`, sel === 'live')}${leagues.map((l) => chip('data-secleague', `combat|${l.id}`, `${D.SPORT_ICON[l.sport]} ${l.name} <span class="count">${(S.events.get(l.id) || []).filter((e) => e.state !== 'post').length}</span>`, sel === l.id)).join('')}</div>
+    <div class="note chip-group-title">División</div>
+    <div class="chips">${chip('data-combatdiv', 'all', 'Todas', S.combatDiv === 'all')}${divisions.map((d) => chip('data-combatdiv', d, esc(d), S.combatDiv === d)).join('')}
+      <button class="chip glass ${S.combatTitle ? 'active' : ''}" data-combattitle>🏆 Solo campeonatos <span class="count">${titles}</span></button></div>
+    <div class="flex tabs-inline"><div class="segmented"><button data-mfilter="upcoming" class="${S.matchFilter === 'upcoming' ? 'active' : ''}">Próximas y en vivo</button><button data-mfilter="finished" class="${S.matchFilter === 'finished' ? 'active' : ''}">Resultados</button></div>
+      <span class="note">Precios de Polymarket, Kalshi y casas · % = probabilidad · toca una pelea para ver estadísticas de KO, mercados y especialistas</span></div>`;
+  if (!ordered.length) return head + `<div class="widget glass empty">${S.lastUpdate ? 'No hay peleas para este filtro.' : 'Cargando carteleras…'}</div>`;
+  return head + ordered.map(([name, items]) => {
+    const first = items[0].ev;
+    const lg = D.leagueById(first.leagueId);
+    const logo = D.leagueLogo(first.leagueId);
+    items.sort((x, y) => (SEG_RANK[x.ev.segment] ?? 9) - (SEG_RANK[y.ev.segment] ?? 9) || (y.ev.order ?? 0) - (x.ev.order ?? 0) || new Date(x.ev.date) - new Date(y.ev.date));
+    // Subtítulos de la cartelera: "Cartelera principal" (incluye estelar y coestelar) y "Preliminares".
+    let lastSeg = null;
+    const rows = items.map((a) => {
+      const segLabel = a.ev.segment === 'Preliminares' ? 'Preliminares' : a.ev.segment ? 'Cartelera principal' : '';
+      const header = segLabel && segLabel !== lastSeg ? `<div class="seg-head">${segLabel}</div>` : '';
+      lastSeg = segLabel;
+      return header + matchRow(a);
+    }).join('');
+    return `<div class="league-block glass fight-card">
+      <div class="league-head">${logo ? `<img class="lg-logo" src="${esc(logo)}" alt="" loading="lazy" onerror="this.remove()">` : D.SPORT_ICON[lg.sport]} ${esc(name)}
+        <span class="spacer"></span>${first.sport === 'mma' ? `<span class="note">${new Date(first.date).toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short' })}${first.venue ? ' · ' + esc(first.venue) : ''}</span>` : ''}<span class="meta note">${items.length}</span></div>
+      ${rows}</div>`;
+  }).join('');
 }
 
 // ---------- Oro ----------
@@ -884,7 +953,9 @@ function renderSheet() {
   const big = ev.state === 'pre' ? (ev.sport === 'esports' ? `Bo${ev.bestOf}` : 'vs') : ev.sport === 'tennis' ?`${(a.model.live?.sets || [0, 0]).join('-')}` : `${ev.home.score ?? 0} - ${ev.away.score ?? 0}`;
   const status = ev.state === 'in' ? `<span class="live-tag" style="color:var(--red)"><span class="dot live"></span> ${esc(ev.detail)}</span>` : ev.state === 'post' ? 'Final' : new Date(ev.date).toLocaleString('es-MX', { weekday: 'long', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   const team = (t) => `<div>${t.logo ? `<img src="${esc(t.logo)}" alt="" onerror="this.remove()">` : `<div style="font-size:40px">${D.SPORT_ICON[ev.sport]}</div>`}<div class="tname">${esc(t.name)}</div><div class="note">${esc(t.record || t.flag || '')}${t.form ? ' · ' + esc(t.form) : ''}</div></div>`;
-  const tabs = ['esports', 'mma', 'boxing'].includes(ev.sport)
+  const tabs = ev.sport === 'mma' || ev.sport === 'boxing'
+    ? [['analysis', 'Análisis'], ['fighters', 'Peleadores'], ['markets', 'Mercados y momios'], ['experts', 'Especialistas'], ['ai', '✦ IA']]
+    : ev.sport === 'esports'
     ? [['analysis', 'Análisis'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']]
     : [['analysis', 'Análisis'], ['lineups', ev.sport === 'soccer' ? 'Alineaciones' : 'Plantilla'], ['stats', 'Estadísticas'], ['feed', 'Minuto a minuto'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']];
   $('#sheet-body').innerHTML = `<div class="scoreboard">${team(ev.home)}<div><div class="big">${esc(big)}</div><div class="st">${status}</div>${ev.sport === 'tennis' && ev.state !== 'pre' ? `<div class="note">${ev.home.linescores.join(' ')}<br>${ev.away.linescores.join(' ')}</div>` : ''}</div>${team(ev.away)}</div>
@@ -892,6 +963,8 @@ function renderSheet() {
     <div id="stab-body">${sheetTab(a, sum)}</div>`;
   labelTables($('#sheet-body'));
   if (S.sheetTab === 'news') loadMatchNews(a);
+  if (S.sheetTab === 'fighters') loadFighters(a);
+  if (S.sheetTab === 'experts') loadExperts(a);
 }
 
 function sheetTab(a, sum) {
@@ -904,6 +977,9 @@ function sheetTab(a, sum) {
     case 'news': return '<div id="match-news">' + loading + '</div>';
     case 'ai': return tabAI(a);
     case 'odds': return tabOdds(a);
+    case 'fighters': return '<div id="fighters-box">' + loading + '</div>';
+    case 'markets': return tabFightMarkets(a);
+    case 'experts': return '<div id="experts-box">' + loading + '</div>';
   }
   return '';
 }
@@ -1013,6 +1089,93 @@ function tabAI(a) {
     ${r.sources?.length ? `<div class="note mt">Fuentes: ${r.sources.map((s) => `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title || s.url)}</a>`).join(' · ')}</div>` : ''}
     <div class="flex mt">${r.decision === 'apostar' && sel ? `<button class="btn primary" data-slip="${key(a.ev)}|${sel.pick}" data-aistake="${stake}">Apostar recomendación</button>` : ''}<button class="btn" data-ai-run="${key(a.ev)}">Volver a analizar</button><span class="note">${new Date(r.t).toLocaleTimeString('es-MX')} · ${esc(r.model)}</span></div>
   </div>`;
+}
+
+// ---------- Peleas: peleadores, mercados y especialistas ----------
+async function fighterData(t) {
+  if (!t.athleteId) return null;
+  if (!S.fighters.has(t.athleteId)) S.fighters.set(t.athleteId, await D.getFighter(t.athleteId).catch(() => null));
+  return S.fighters.get(t.athleteId);
+}
+
+async function loadFighters(a) {
+  const box = $('#fighters-box');
+  if (!box) return;
+  const ev = a.ev;
+  if (ev.sport === 'boxing') { box.innerHTML = '<div class="widget glass empty">Para boxeo no hay una fuente gratuita de estadísticas por peleador. Revisa la pestaña Especialistas para análisis y pronósticos.</div>'; return; }
+  const [h, w] = await Promise.all([fighterData(ev.home), fighterData(ev.away)]);
+  if (!$('#fighters-box')) return;
+  if (!h && !w) { box.innerHTML = '<div class="widget glass empty">ESPN no tiene estadísticas de estos peleadores todavía.</div>'; return; }
+  const num = (x, d = 0) => (x == null || !Number.isFinite(Number(x)) ? '—' : Number(x).toFixed(d));
+  // better: 1 = más alto es mejor, -1 = más bajo es mejor, 0 = sin comparación
+  const row = (label, x, y, fmt = (v) => v ?? '—', better = 0) => {
+    const nx = Number(x), ny = Number(y);
+    const cmp = better && Number.isFinite(nx) && Number.isFinite(ny) && nx !== ny ? (better * (nx - ny) > 0 ? 'l' : 'r') : '';
+    return `<div class="cmp-row"><div class="l ${cmp === 'l' ? 'better' : ''}">${fmt(x)}</div><div class="c">${label}</div><div class="r ${cmp === 'r' ? 'better' : ''}">${fmt(y)}</div></div>`;
+  };
+  const pctF = (v) => (v == null ? '—' : num(v, 0) + '%');
+  const side = (t, f) => `<div class="fh"><img src="${esc(f?.headshot || t.logo)}" alt="" onerror="this.style.visibility='hidden'"><div class="fn">${esc(t.name)}</div>${f?.nickname ? `<div class="note">"${esc(f.nickname)}"</div>` : ''}<div class="note">${esc([t.record, f?.country || t.flag].filter(Boolean).join(' · '))}</div>${(t.belts || []).length ? `<div class="tag title-fight" style="margin-top:4px">🏆 Campeón</div>` : ''}</div>`;
+  box.innerHTML = `<div class="widget" style="background:var(--fill)">
+    <div class="fighter-cmp">${side(ev.home, h)}<div class="c" style="align-self:center;font-weight:800;color:var(--text-2)">VS</div>${side(ev.away, w)}</div>
+    <h3 class="mt">Cómo ganan</h3>
+    ${row('Victorias por KO/TKO', h?.kos, w?.kos, (v) => num(v), 1)}
+    ${row('Victorias por sumisión', h?.subs, w?.subs, (v) => num(v), 1)}
+    ${row('% por KO/TKO', h?.koPct, w?.koPct, pctF, 1)}
+    ${row('% por decisión', h?.decPct, w?.decPct, pctF, 0)}
+    ${row('Derrotas por KO/TKO', h?.koLosses, w?.koLosses, (v) => num(v), -1)}
+    ${row('Derrotas por sumisión', h?.subLosses, w?.subLosses, (v) => num(v), -1)}
+    ${row('Peleas de título ganadas', h?.titleWins, w?.titleWins, (v) => num(v), 1)}
+    <h3 class="mt">Estilo</h3>
+    ${row('Golpes significativos/min', h?.strikeLPM, w?.strikeLPM, (v) => num(v, 2), 1)}
+    ${row('Precisión de golpeo', h?.strikeAcc, w?.strikeAcc, pctF, 1)}
+    ${row('Derribos por pelea', h?.tdAvg, w?.tdAvg, (v) => num(v, 2), 1)}
+    ${row('Precisión de derribo', h?.tdAcc, w?.tdAcc, pctF, 1)}
+    ${row('Intentos de sumisión', h?.subAvg, w?.subAvg, (v) => num(v, 2), 1)}
+    <h3 class="mt">Físico</h3>
+    ${row('Edad', h?.age, w?.age, (v) => num(v), -1)}
+    ${row('Estatura', h?.height, w?.height)}
+    ${row('Alcance', h?.reach, w?.reach)}
+    ${row('Guardia', h?.stance, w?.stance)}
+    ${row('Equipo', h?.team, w?.team)}
+    <div class="note mt">En verde, quién tiene ventaja en cada dato. Fuente: ESPN. Ojo: las estadísticas no dicen contra quién se lograron.</div></div>`;
+}
+
+function tabFightMarkets(a) {
+  const ev = a.ev, pm = ev.pm;
+  const links = (pm?.sources || []).map((s) => `<a class="btn small" href="${esc(s.url)}" target="_blank" rel="noopener">Ver en ${esc(s.source)} ↗</a>`).join('');
+  const props = (pm?.sources || []).flatMap((s) => (s.props || []).map((p) => ({ ...p, source: s.source })));
+  const propLabel = (q) => String(q).replace(/^Fight to Go the Distance\?$/i, '¿La pelea llega a la decisión?').replace(/^Will the fight be won by KO or TKO\?$/i, '¿Termina por KO/TKO?')
+    .replace(/^Will the fight be won by submission\?$/i, '¿Termina por sumisión?').replace(/^Will (.+) win by KO or TKO\?$/i, '¿$1 gana por KO/TKO?')
+    .replace(/^Will (.+) win by submission\?$/i, '¿$1 gana por sumisión?').replace(/^O\/U ([\d.]+) Rounds$/i, 'Más/menos de $1 rounds');
+  const propRows = props.map((p) => {
+    const yes = p.names[0] === 'Over' ? 'Más' : 'Sí';
+    const thin = !p.traded || (p.prices[0] === 0.5 && p.prices[1] === 0.5);
+    return `<div class="prop-row"><div>${esc(propLabel(p.q))}<div class="note">${esc(p.source)}${thin ? ' · poco operado (precio poco confiable)' : ''}</div></div><div class="pp">${pct(p.prices[0])}</div><div class="note">${yes} · momio ${p.prices[0] > 0.02 ? dec(1 / p.prices[0]) : '—'}</div></div>`;
+  }).join('');
+  const books = ev.odds ? `<div class="widget mt" style="background:var(--fill)"><h3>Casas (mejor precio · ${esc(ev.odds.provider)})</h3>
+      <div class="prop-row"><div><b>${esc(ev.home.name)}</b>${ev.odds.books?.home ? `<div class="note">${esc(ev.odds.books.home)}</div>` : ''}</div><div class="pp">${dec(ev.odds.home)}</div><div class="note">${toAmerican(ev.odds.home)}</div></div>
+      <div class="prop-row"><div><b>${esc(ev.away.name)}</b>${ev.odds.books?.away ? `<div class="note">${esc(ev.odds.books.away)}</div>` : ''}</div><div class="pp">${dec(ev.odds.away)}</div><div class="note">${toAmerican(ev.odds.away)}</div></div></div>`
+    : `<div class="note mt">${S.cfg.hasOdds ? 'The Odds API todavía no publica momios de esta pelea.' : 'Agrega tu clave de The Odds API en Ajustes para ver momios de casas.'}</div>`;
+  return `${links ? `<div class="pm-links">${links}</div>` : '<div class="note">Polymarket y Kalshi no tienen mercado de esta pelea todavía.</div>'}
+    <div class="mt">${predictionBlock(a)}</div>
+    ${books}
+    ${propRows ? `<div class="widget mt" style="background:var(--fill)"><h3>¿Cómo termina? (Polymarket)</h3>${propRows}
+      <div class="note mt">Probabilidad que el dinero real asigna a cada forma de terminar. Compárala con el % de KO y decisiones de cada peleador (pestaña Peleadores).</div></div>` : ''}
+    <div class="note mt">Para apostar en México: captura en el boleto el momio de Caliente, Codere o bet365 y el bot te dice si hay valor.</div>`;
+}
+
+async function loadExperts(a) {
+  const ev = a.ev;
+  const q = `"${ev.home.name.split(' ').slice(-1)[0]}" "${ev.away.name.split(' ').slice(-1)[0]}"`;
+  const [es, en] = await Promise.all([
+    D.searchNews(`${q} pronóstico OR predicción OR análisis OR apuesta`, 8),
+    D.searchNews(`${q} prediction OR picks OR breakdown OR odds`, 10, 'en'),
+  ]);
+  const box = $('#experts-box');
+  if (!box) return;
+  box.innerHTML = `<div class="note" style="margin-bottom:8px">Pronósticos y análisis de medios especializados (MMA Junkie, MMA Fighting, Sherdog, ESPN, medios en español). Úsalos como contexto: los expertos también se equivocan.</div>
+    <div class="grid halves"><div><h3 class="note">En español</h3>${newsList(es)}</div><div><h3 class="note">En inglés</h3>${newsList(en)}</div></div>
+    ${aiReady() ? `<div class="ai-card mt"><b>✦ ¿Quieres un resumen?</b><div class="note">La IA lee estas fuentes, las estadísticas y los mercados, y te da su veredicto.</div><button class="btn primary mt" data-stab="ai">Analizar con IA</button></div>` : ''}`;
 }
 
 function predictionBlock(a) {
@@ -1423,7 +1586,7 @@ async function updateAction(kind) {
 
 // ---------- eventos ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-betsource],[data-cashout],[data-airetry],[data-phoneenable],[data-notifread],[data-notifall],[data-notiffilter],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
+  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-betsource],[data-cashout],[data-combatdiv],[data-combattitle],[data-airetry],[data-phoneenable],[data-notifread],[data-notifall],[data-notiffilter],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
   if (!t) return;
   // Notificaciones: tocar una la marca como leída (y luego abre su partido o enlace); ✓ solo la marca.
   if (t.dataset.notifread) {
@@ -1445,6 +1608,8 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.stab) { S.sheetTab = t.dataset.stab; renderSheet(); return; }
   if (t.dataset.banktab) { S.bankTab = t.dataset.banktab; if (S.tab !== 'bank') go('bank'); else render(); return; }
   if (t.dataset.betsource) { S.betSource = t.dataset.betsource; render(); return; }
+  if (t.dataset.combatdiv) { S.combatDiv = t.dataset.combatdiv; render(); return; }
+  if (t.dataset.combattitle !== undefined) { S.combatTitle = !S.combatTitle; render(); return; }
   if (t.dataset.more) { S.moreTab = t.dataset.more; render(); return; }
   if (t.dataset.tablesleague) { S.tablesLeague = t.dataset.tablesleague; render(); return; }
   if (t.dataset.newsleague) { S.newsLeague = t.dataset.newsleague; S.newsQuery = ''; render(); return; }

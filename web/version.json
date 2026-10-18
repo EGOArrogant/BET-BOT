@@ -1,8 +1,13 @@
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
   "date": "2026-10-18",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Combate: carteleras agrupadas por evento, Cartelera principal y Preliminares, filtro por división y 🏆 Solo campeonatos",
+    "Peleas de título detectadas automáticamente (cinturón del campeón), estelar y coestelar marcadas",
+    "Pestaña Peleadores: KO/TKO, sumisiones, decisiones, golpes, derribos, edad, estatura y alcance comparados",
+    "Pestaña Mercados y momios: Polymarket, Kalshi, casas (The Odds API) y ¿cómo termina? (KO, sumisión, decisión, rondas)",
+    "Pestaña Especialistas: pronósticos y análisis de medios en español e inglés",
     "Nueva sección Combate: UFC (cartelera de ESPN con récord, país y división de cada peleador) y Boxeo",
     "Precios de UFC y boxeo desde Polymarket y Kalshi; boxeo también desde The Odds API (cada 30 min para cuidar créditos)",
     "Las peleas se liquidan solas con el ganador oficial; la IA tiene conocimiento específico de MMA y boxeo",
