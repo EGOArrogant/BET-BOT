@@ -198,7 +198,8 @@ function esportsModel(ev, table) {
     const p = matchFromSet(pMap, bo, a, b);
     live = { home: p, away: 1 - p, sets: [a, b] };
   }
-  const known = ((r1?.maps || 0) >= 4 && (r2?.maps || 0) >= 4) || (r1?.w != null && r2?.w != null && r1.w + r1.l + r2.w + r2.l > 0);
+  // Datos propios suficientes: al menos 8 mapas observados de cada equipo, o récord del torneo (LoL) de ambos.
+  const known = ((r1?.maps || 0) >= 8 && (r2?.maps || 0) >= 8) || (r1?.w != null && r2?.w != null && r1.w + r1.l >= 2 && r2.w + r2.l >= 2);
   return { kind: 'esports', pre, live, pMap, elo1: e1, elo2: e2, known };
 }
 
@@ -235,11 +236,24 @@ function minOddsFor(p, minEV) {
   return hi;
 }
 
+// Mejor precio disponible en los mercados de predicción para un resultado: comprar al precio "ask" paga 1/ask.
+function pmPrice(pm, side) {
+  const k = { home: 'askHome', away: 'askAway', draw: 'askDraw' }[side];
+  let best = null;
+  for (const src of pm.sources || []) {
+    const ask = src[k];
+    if (!(ask > 0.03 && ask < 0.97)) continue;
+    if (!best || ask < best.ask) best = { ask, odds: 1 / ask, source: src.source };
+  }
+  return best;
+}
+
 // Competencias entre ligas distintas (Champions): la tabla no compara bien la fuerza real.
 const LEAGUE_WEIGHT = { 'uefa.champions': 0.4 };
 
 export function selections(ev, model, settings, weights) {
-  const w = (weights?.[ev.sport] ?? settings.modelWeight ?? 0.35) * (LEAGUE_WEIGHT[ev.leagueId] ?? 1);
+  // Si el modelo no tiene datos propios de estos equipos, no opina: la probabilidad es 100% la del mercado.
+  const w = model.known ? (weights?.[ev.sport] ?? settings.modelWeight ?? 0.35) * (LEAGUE_WEIGHT[ev.leagueId] ?? 1) : 0;
   const out = [];
   const isLive = ev.state === 'in';
   const probs = isLive && model.live ? model.live : model.pre;
@@ -250,14 +264,20 @@ export function selections(ev, model, settings, weights) {
   const sides = model.kind === 'soccer' ? ['home', 'draw', 'away'] : ['home', 'away'];
   const mlOdds = sides.map((s) => (usableOdds ? o[s] : null));
   const fair = mlOdds.every((x) => x) ? fairProbs(mlOdds) : null;
+  // Mercados de predicción (Polymarket / Kalshi): su precio es probabilidad con dinero real detrás, y se actualiza también en vivo.
+  const pm = ev.pm && sides.every((s) => ev.pm[s] != null) ? ev.pm : null;
   sides.forEach((s, i) => {
     const pModel = probs[s];
-    const pMarket = fair ? fair.probs[i] : null;
+    // Consenso del mercado = promedio de casas (sin margen) y mercados de predicción.
+    const parts = [fair ? fair.probs[i] : null, pm ? pm[s] : null].filter((x) => x != null);
+    const pMarket = parts.length ? parts.reduce((a, b) => a + b, 0) / parts.length : null;
     const p = blend(pModel, pMarket, w);
+    let odds = mlOdds[i], oddsSource = odds ? o.provider || 'Casa' : null;
+    if (!odds && pm) { const best = pmPrice(pm, s); if (best) { odds = best.odds; oddsSource = best.source; } }
     const team = s === 'home' ? ev.home.name : s === 'away' ? ev.away.name : 'Empate';
     out.push(pack(ev, settings, {
       market: model.kind === 'soccer' ? '1X2' : 'Ganador', pick: s, label: s === 'draw' ? 'Empate' : team,
-      pModel, pMarket, p, odds: mlOdds[i], margin: fair?.margin,
+      pModel, pMarket, p, odds, oddsSource, margin: fair?.margin, pPM: pm ? pm[s] : null,
     }));
   });
 

@@ -17,7 +17,7 @@ const teamId = (game, name) => `${game}:${String(name || '').toLowerCase().repla
 
 // ---------- League of Legends ----------
 async function lolEvents(league) {
-  const data = await cached('lol', 60_000, async () => {
+  const data = await cached('lol', 20_000, async () => {
     const res = await fetch(`${LOL_API}/getSchedule?hl=es-MX`, { headers: { 'x-api-key': LOL_KEY } });
     if (!res.ok) throw new Error('LoL Esports HTTP ' + res.status);
     return res.json();
@@ -41,13 +41,14 @@ async function lolEvents(league) {
         detail: state === 'in' ? `En vivo · ${h.score ?? 0}-${a.score ?? 0}` : state === 'post' ? 'Final' : '',
         clock: '', period: 0, home: h, away: a, odds: null,
         bestOf: e.match.strategy?.count || 1, tournament: e.league?.name || 'LoL', round: e.blockName || '', venue: e.league?.name || '',
+        leagueLogo: e.league?.image || '',
       };
     });
 }
 
 // ---------- Valorant y CS2 (Liquipedia, vía el servidor local para respetar sus límites) ----------
 async function liquipediaEvents(league) {
-  const html = await cached('lp:' + league.wiki, 300_000, async () => {
+  const html = await cached('lp:' + league.wiki, 60_000, async () => {
     const url = `https://liquipedia.net/${league.wiki}/api.php?action=parse&page=Liquipedia:Matches&format=json&prop=text`;
     let res = await fetch('/api/proxy?url=' + encodeURIComponent(url));
     if (res.status === 429) {
@@ -75,11 +76,13 @@ async function liquipediaEvents(league) {
     const tour = m.querySelector('.match-info-tournament-name')?.textContent.trim() || league.name;
     const side = (o, i) => {
       const a = o.querySelector('.name a') || o.querySelector('.name');
-      const full = a?.getAttribute('title') || a?.textContent?.trim() || 'Por definir';
+      const full = (a?.getAttribute('title') || a?.textContent?.trim() || 'Por definir').replace(/\s*\(page does not exist\)\s*$/i, '');
+      // Logo original del equipo (versión para fondo oscuro si existe), servido a través del servidor local.
+      const img = o.querySelector('.team-template-darkmode img') || o.querySelector('img');
+      const src = img?.getAttribute('src') || '';
       return {
-        // Liquipedia no permite usar sus imágenes desde otros sitios, así que no se cargan logos.
         id: teamId(league.game, full), name: full.replace(/_/g, ' '), abbr: a?.textContent?.trim() || '',
-        logo: '',
+        logo: src.startsWith('/commons/images/') ? '/api/img?u=' + encodeURIComponent('https://liquipedia.net' + src) : '',
         score: scores.length === 2 ? scores[i] : null, winner: o.classList.contains('match-info-header-winner'), record: '', form: '', linescores: [],
       };
     };

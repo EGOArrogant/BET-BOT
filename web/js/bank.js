@@ -10,7 +10,7 @@ export const DEFAULT_STATE = () => ({
   bankroll: 2000,
   bets: [],
   predictions: {},
-  weights: { soccer: 0.35, football: 0.3, basketball: 0.3, baseball: 0.3, tennis: 0.5, esports: 0.5 },
+  weights: { soccer: 0.35, football: 0.3, basketball: 0.3, baseball: 0.3, tennis: 0.25, esports: 0.35 },
   settings: {
     kellyFraction: 0.25, // Kelly al 25%: crecimiento sólido con mucha menos volatilidad
     maxStakePct: 0.03,   // nunca más del 3% de la banca en una apuesta
@@ -21,7 +21,10 @@ export const DEFAULT_STATE = () => ({
     maxBetsPerDay: 8,
     autopilot: false,
     aiConfirm: false,
-    scanMinutes: 3,
+    practiceMode: true,  // modo práctica: apuestas ficticias diarias garantizadas para aprender desde el día 1
+    practicePerDay: 5,
+    practiceStake: 10,   // monto de cada apuesta de práctica (MXN)
+    scanMinutes: 1,
   },
   history: [{ t: Date.now(), bankroll: 2000 }],
   log: [],
@@ -50,6 +53,23 @@ export const deviceId = (() => {
     return id;
   } catch { return 'd-sin-almacenamiento'; }
 })();
+// Un solo dispositivo opera el bot. Si el dispositivo asignado lleva más de 5 minutos sin dar señales
+// (cerrado o apagado), el que esté abierto toma el control para que el bot nunca se quede sin operar.
+const STALE_MS = 5 * 60_000;
+export function claimDevice() {
+  const s = state.settings;
+  const stale = !s.autopilotSeen || Date.now() - s.autopilotSeen > STALE_MS;
+  if (!s.autopilotDevice || (s.autopilotDevice !== deviceId && stale)) {
+    s.autopilotDevice = deviceId;
+    log('Este dispositivo tomó el control del bot (el anterior no estaba activo)');
+  }
+  if (s.autopilotDevice === deviceId) {
+    if (!s.autopilotSeen || Date.now() - s.autopilotSeen > 60_000) { s.autopilotSeen = Date.now(); save(); }
+    return true;
+  }
+  return false;
+}
+// Solo lectura (para la interfaz): ¿este dispositivo opera el piloto?
 export const isAutopilotHere = () => state.settings.autopilot && state.settings.autopilotDevice === deviceId;
 
 export async function loadState() {
@@ -182,7 +202,7 @@ export function placeBet({ ev, sel, stake, odds, oddsMx = null, source = 'manual
     refOdds: odds || null, oddsMx: oddsMx ? Number(oddsMx) : null, odds: finalOdds,
     p: sel.p, pModel: sel.pModel, pMarket: sel.pMarket, ev: sel.p * finalOdds - 1,
     stake, source, reasoning, placedAt: Date.now(), status: 'pending', payout: 0, closingOdds: null, book,
-    minOdds: sel.minOdds ?? null, placedReal: false,
+    minOdds: sel.minOdds ?? null, placedReal: false, oddsSource: sel.oddsSource || null,
   };
   // Cada momio capturado por casa sirve para aprender qué casa paga mejor.
   for (const [b, q] of Object.entries(quotes)) if (q) recordQuote(state, { book: b, sport: ev.sport, market: sel.market, odds: q, refOdds: odds });
@@ -198,6 +218,24 @@ export function cancelBet(id) {
   b.status = 'void';
   state.bankroll = round2(state.bankroll + b.stake);
   log(`Apuesta anulada: ${b.label} (${b.eventName})`);
+}
+
+// Cobro anticipado (cash out) simulado: cierra la apuesta antes de tiempo por el monto indicado.
+export function cashOut(id, amount) {
+  const b = state.bets.find((x) => x.id === id);
+  if (!b || b.status !== 'pending') return false;
+  amount = round2(Number(amount));
+  if (!(amount > 0)) return false;
+  b.status = 'cashout';
+  b.payout = amount;
+  b.settledAt = Date.now();
+  state.bankroll = round2(state.bankroll + amount);
+  const bk = b.book && state.books[b.book];
+  if (bk && bk.balance != null && bk.balance !== '') bk.balance = round2(Number(bk.balance) + amount - b.stake);
+  log(`💸 Cobro anticipado: ${b.label} (${b.eventName}) por $${amount} (apostaste $${b.stake})`, amount >= b.stake ? 'won' : 'lost');
+  state.history.push({ t: Date.now(), bankroll: equityNow() });
+  save();
+  return true;
 }
 
 export function setMxOdds(id, oddsMx, book = null) {
@@ -388,9 +426,9 @@ export function learningStats() {
 
 // ---------- métricas ----------
 export function metrics() {
-  const settled = state.bets.filter((b) => b.status === 'won' || b.status === 'lost');
+  const settled = state.bets.filter((b) => b.status === 'won' || b.status === 'lost' || b.status === 'cashout');
   const staked = settled.reduce((a, b) => a + b.stake, 0);
-  const returned = settled.reduce((a, b) => a + (b.status === 'won' ? b.payout : 0), 0);
+  const returned = settled.reduce((a, b) => a + (b.status === 'won' || b.status === 'cashout' ? b.payout : 0), 0);
   const wins = settled.filter((b) => b.status === 'won').length;
   const clvBets = settled.filter((b) => b.closingOdds);
   const clv = clvBets.length ? clvBets.reduce((a, b) => a + (b.odds / b.closingOdds - 1), 0) / clvBets.length : null;
@@ -398,7 +436,7 @@ export function metrics() {
   const bySport = {};
   for (const b of settled) {
     const s = (bySport[b.sport] ||= { n: 0, staked: 0, profit: 0 });
-    s.n++; s.staked += b.stake; s.profit += (b.status === 'won' ? b.payout : 0) - b.stake;
+    s.n++; s.staked += b.stake; s.profit += (b.status === 'won' || b.status === 'cashout' ? b.payout : 0) - b.stake;
   }
   return {
     n: settled.length, wins, hitRate: settled.length ? wins / settled.length : null,

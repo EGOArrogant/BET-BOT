@@ -51,6 +51,13 @@ const STATE_ES = { Final: 'Final', 'Game Over': 'Final', Scheduled: 'Programado'
 const stateEs = (s) => STATE_ES[s] || s || '';
 export const leagueById = (id) => LEAGUES.find((l) => l.id === id);
 
+// Logos oficiales de las ligas (ESPN los actualiza al leer cada scoreboard).
+export const LEAGUE_LOGO = {
+  lmb: 'https://www.mlbstatic.com/team-logos/league-on-dark/125.svg',
+  lol: 'https://static.lolesports.com/leagues/1592594612171_WorldsDarkBG.png',
+};
+export const leagueLogo = (id) => LEAGUE_LOGO[id] || '';
+
 // ---------- utilidades ----------
 const cache = new Map();
 async function getJSON(url, ttlMs = 30_000) {
@@ -170,7 +177,9 @@ function normalizeTennis(ev, league) {
 
 async function espnScoreboard(league, dateStr) {
   const url = `${ESPN}/${league.path}/scoreboard${dateStr ? `?dates=${dateStr}` : ''}`;
-  const data = await getJSON(url, 25_000);
+  const data = await getJSON(url, 15_000);
+  const lgLogo = data.leagues?.[0]?.logos?.find((l) => /dark/i.test((l.rel || []).join(' ')))?.href || data.leagues?.[0]?.logos?.[0]?.href;
+  if (lgLogo && !/ESPN-icon/i.test(lgLogo)) LEAGUE_LOGO[league.id] = lgLogo;
   if (league.sport === 'tennis') return (data.events || []).flatMap((e) => normalizeTennis(e, league));
   return (data.events || []).map((e) => normalizeTeamEvent(e, league));
 }
@@ -186,7 +195,7 @@ async function lmbSchedule(league, from, to) {
       const ls = g.linescore || {};
       const side = (s) => ({
         id: String(g.teams[s].team.id), name: g.teams[s].team.name, abbr: (g.teams[s].team.name || '').slice(0, 3).toUpperCase(),
-        logo: '', score: num(g.teams[s].score), form: '', record: g.teams[s].leagueRecord ? `${g.teams[s].leagueRecord.wins}-${g.teams[s].leagueRecord.losses}` : '',
+        logo: `https://www.mlbstatic.com/team-logos/${g.teams[s].team.id}.svg`, score: num(g.teams[s].score), form: '', record: g.teams[s].leagueRecord ? `${g.teams[s].leagueRecord.wins}-${g.teams[s].leagueRecord.losses}` : '',
         winner: !!g.teams[s].isWinner, linescores: [], pitcher: g.teams[s].probablePitcher?.fullName || '',
       });
       out.push({
@@ -319,7 +328,7 @@ export async function getSummary(league, eventId) {
       probablePitchers: { home: data.gameData?.probablePitchers?.home?.fullName, away: data.gameData?.probablePitchers?.away?.fullName },
     };
   }
-  const data = await getJSON(`${ESPN}/${league.path}/summary?event=${eventId}`, 20_000);
+  const data = await getJSON(`${ESPN}/${league.path}/summary?event=${eventId}`, 10_000);
   const lineups = (data.rosters || []).map((r) => ({
     team: r.team?.displayName, teamId: String(r.team?.id), homeAway: r.homeAway, formation: r.formation || '',
     players: (r.roster || []).map((p) => ({

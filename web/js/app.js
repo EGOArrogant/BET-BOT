@@ -5,6 +5,7 @@ import { initAI, aiReady, analyzeWithAI, researchOdds } from './ai.js';
 import { STRATEGY_HTML } from './strategy.js';
 import * as K from './books.js';
 import { updateElo, esportsTable } from './esports.js';
+import { getPredictionMarkets, matchPrediction } from './prediction.js';
 
 // ---------- utilidades ----------
 const $ = (s, r = document) => r.querySelector(s);
@@ -56,11 +57,13 @@ const allEvents = () => [...S.events.values()].flat();
 function analyze(ev, table, winProb) {
   const st = B.getState();
   const model = M.modelEvent(ev, table || new Map(), winProb);
+  // Con precio de Polymarket/Kalshi hay referencia de mercado aunque el modelo no tenga datos propios.
+  model.tradable = model.known || !!ev.pm;
   const sels = M.selections(ev, model, st.settings, st.weights);
   const golden = M.goldenOpportunities(ev, model, sels);
   B.recordPrediction(ev, model, sels);
   // Aprendizaje sin IA: registra lo que el bot habría apostado (sin tocar la banca).
-  if (ev.state === 'pre' && model.known) for (const s of sels) if (s.value) B.recordShadow(ev, s);
+  if (ev.state === 'pre' && model.tradable) for (const s of sels) if (s.value) B.recordShadow(ev, s);
   const a = { ev, model, sels, golden };
   S.analysis.set(key(ev), a);
   return a;
@@ -75,6 +78,9 @@ async function refreshLeague(lg) {
   } else {
     [events, table] = await Promise.all([D.getEvents(lg), D.getTeamTable(lg)]);
   }
+  // Precios de Polymarket y Kalshi para cada partido (si existen).
+  const pmk = await getPredictionMarkets(lg).catch(() => []);
+  for (const ev of events) ev.pm = matchPrediction(ev, pmk);
   S.events.set(lg.id, events);
   S.tables.set(lg.id, table);
   for (const k of [...S.analysis.keys()]) if (k.startsWith(lg.id + ':')) S.analysis.delete(k);
@@ -95,8 +101,8 @@ async function refreshAll() {
   B.settleShadow(events);
   B.learnFromEvents(events);
   await settleOld();
-  // El piloto automático solo corre en el dispositivo donde se activó (evita apuestas duplicadas).
-  if (B.isAutopilotHere()) await autopilot();
+  // El piloto automático y la práctica diaria corren solo en un dispositivo (evita apuestas duplicadas).
+  await autopilot();
   try { await loadRelevantNews(); } catch {}
   collectNotifications();
   S.lastUpdate = Date.now();
@@ -134,13 +140,65 @@ function handleAIError(e) {
 
 // ---------- piloto automático ----------
 async function autopilot() {
+  const s = B.getState().settings;
+  if (!s.autopilot && !s.practiceMode) return;
+  if (!B.claimDevice()) return; // otro dispositivo activo está operando el bot
+  if (s.autopilot) await valueBets();
+  if (s.practiceMode) practiceBets();
+}
+
+// Modo práctica: garantiza apuestas ficticias diarias (monto mínimo) con las mejores opciones disponibles,
+// aunque no lleguen al EV mínimo. Sirve para que el bot opere y aprenda desde el primer día.
+function practiceBets() {
+  const st = B.getState(), s = st.settings;
+  const today = new Date().toDateString();
+  const done = st.bets.filter((b) => b.source === 'práctica' && b.status !== 'void' && new Date(b.placedAt).toDateString() === today).length;
+  let room = (s.practicePerDay ?? 5) - done;
+  const stake = Math.max(1, Number(s.practiceStake) || 10);
+  if (room <= 0 || st.bankroll < stake) return;
+  const segs = B.segmentStats();
+  const cands = [];
+  for (const a of allAnalyses()) {
+    if (a.ev.state !== 'pre' || B.hasBetOn(a.ev.id)) continue;
+    const hrs = (new Date(a.ev.date) - Date.now()) / 3600000;
+    if (hrs > 30 || hrs < 0.05) continue;
+    if (!a.model.tradable) continue;
+    for (const x of a.sels) {
+      if (!x.odds || x.odds < 1.4 || x.odds > 3.6 || x.ev == null) continue; // momios moderados: aprendizaje más estable
+      if (segs[B.segKey(a.ev.sport, x.market, x.odds)]?.status === 'bloqueado') continue;
+      cands.push({ a, sel: x });
+    }
+  }
+  cands.sort((x, y) => y.sel.ev - x.sel.ev); // mejor valor esperado primero
+  const used = new Set();
+  const perSport = {};
+  for (const b of st.bets) if (b.source === 'práctica' && b.status !== 'void' && new Date(b.placedAt).toDateString() === today) perSport[b.sport] = (perSport[b.sport] || 0) + 1;
+  for (const c of cands) {
+    if (room <= 0) break;
+    if (c.sel.ev < -0.04) break; // nunca algo claramente malo, aunque sea práctica
+    if (used.has(c.a.ev.id)) continue;
+    if ((perSport[c.a.ev.sport] || 0) >= 2) continue; // variedad: máximo 2 por deporte al día
+    perSport[c.a.ev.sport] = (perSport[c.a.ev.sport] || 0) + 1;
+    try {
+      const book = K.recommendBook(st, { sport: c.a.ev.sport, p: c.sel.p, stake })?.best?.book;
+      B.placeBet({
+        ev: c.a.ev, sel: c.sel, stake, odds: c.sel.odds, source: 'práctica', book: book?.id || null,
+        reasoning: `Práctica diaria: mejor opción disponible hoy (EV ${pct(c.sel.ev, 1)}, prob. ${pct(c.sel.p)}, precio ${c.sel.oddsSource || 'referencia'})`,
+      });
+      used.add(c.a.ev.id); room--;
+      toast(`🎓 Práctica: $${stake} a ${c.sel.label} @ ${dec(c.sel.odds)}`);
+    } catch (e) { B.log('No se pudo registrar la práctica: ' + e.message, 'error'); }
+  }
+}
+
+async function valueBets() {
   const st = B.getState(), s = st.settings;
   let room = s.maxBetsPerDay - B.betsToday();
   if (room <= 0) return;
   const segs = B.segmentStats();
   const cands = [];
   for (const a of allAnalyses()) {
-    if (a.ev.state !== 'pre' || !a.model.known || B.hasBetOn(a.ev.id)) continue;
+    if (a.ev.state !== 'pre' || !a.model.tradable || B.hasBetOn(a.ev.id)) continue;
     const hrs = (new Date(a.ev.date) - Date.now()) / 3600000;
     if (hrs > 36 || hrs < 0.05) continue;
     // Lo aprendido con las apuestas sombra: no apuesta en segmentos que han dado pérdidas.
@@ -197,6 +255,7 @@ async function buildContext(a) {
     local: { nombre: a.ev.home.name, tabla: table.get(String(a.ev.home.id)) || null, forma: a.ev.home.form, record: a.ev.home.record, sets: a.ev.home.linescores },
     visitante: { nombre: a.ev.away.name, tabla: table.get(String(a.ev.away.id)) || null, forma: a.ev.away.form, record: a.ev.away.record, sets: a.ev.away.linescores },
     momios_referencia: a.ev.odds,
+    mercados_prediccion: a.ev.pm ? { prob_local: a.ev.pm.home, prob_visitante: a.ev.pm.away, prob_empate: a.ev.pm.draw, fuentes: a.ev.pm.sources.map((s) => ({ fuente: s.source, liquidez_usd: Math.round(s.liquidity || 0), local: s.home, visitante: s.away, empate: s.draw })) } : null,
     modelo: { previo: a.model.pre, en_vivo: a.model.live, goles_esperados: a.model.lh ? { local: a.model.lh, visitante: a.model.la } : undefined, peso_modelo: st.weights[a.ev.sport] },
     selecciones: a.sels.map((s) => ({ mercado: s.market, seleccion: s.pick, texto: s.label, linea: s.line, p_modelo: s.pModel, p_mercado: s.pMarket, p_final: s.p, momio_ref: s.odds, ev: s.ev, momio_minimo: s.minOdds })),
     alineaciones: sum?.lineups?.map((l) => ({ equipo: l.team, formacion: l.formation, titulares: l.players.filter((p) => p.starter).map((p) => `${p.name} (${p.pos})`) })),
@@ -255,12 +314,13 @@ function go(tab, moreTab) {
 // Partes fijas: barra lateral, barra inferior, encabezado y contadores.
 function renderChrome() {
   const st = B.getState();
-  const slipN = st.slip.length, toPlaceN = B.pendingBets().filter((b) => !b.placedReal).length;
+  const slipN = st.slip.length, toPlaceN = B.pendingBets().filter((b) => !b.placedReal && b.source !== 'práctica').length;
   const unread = S.notifs.filter((n) => !isRead(n)).length;
   const badge = (id) => (id === 'bet' && slipN + toPlaceN ? `<span class="badge">${slipN + toPlaceN}</span>` : '');
   const sub = (sec) => (S.tab === sec ? `<div class="side-sub">${D.sectionLeagues(sec).map((l) => {
     const live = (S.events.get(l.id) || []).filter((e) => e.state === 'in').length;
-    return `<button class="${S.secLeague[sec] === l.id ? 'active' : ''}" data-secleague="${sec}|${l.id}">${esc(l.name)}${live ? `<span class="dot live"></span>` : ''}</button>`;
+    const logo = D.leagueLogo(l.id);
+    return `<button class="${S.secLeague[sec] === l.id ? 'active' : ''}" data-secleague="${sec}|${l.id}">${logo ? `<img class="lg-mini" src="${esc(logo)}" alt="" loading="lazy" onerror="this.remove()">` : ''}${esc(l.name)}${live ? `<span class="dot live"></span>` : ''}</button>`;
   }).join('')}</div>` : '');
   $('#sidebar').innerHTML = `<div class="brand"><span class="brand-icon">⚽</span><div><b>BetBot MX</b><div class="note">v${esc(S.version?.version || '—')}</div></div></div>
     <nav>${NAV.map(([id, label]) => `<button class="side-item ${S.tab === id ? 'active' : ''}" data-tab="${id}">${icon(id)}<span>${label}</span>${badge(id)}</button>${['soccer', 'sports', 'esports'].includes(id) ? sub(id) : ''}`).join('')}</nav>
@@ -319,6 +379,7 @@ function botWidget() {
     <div class="list" style="background:var(--fill)">
       <div class="row"><div class="icon-sq" style="background:var(--green-fill)">🤖</div><div class="grow"><b>Apostar automáticamente</b><div class="meta">Solo apuestas con EV ≥ ${pct(s.minEV)} · máx. ${s.maxBetsPerDay} al día${s.autopilot ? (B.isAutopilotHere() ? ' · corre en este dispositivo (mantén esta pestaña abierta)' : ' · corre en otro dispositivo') : ''}</div></div>${s.autopilot && !B.isAutopilotHere() ? '<button class="btn small" data-takeover>Correr aquí</button>' : ''}${sw('sw-auto', s.autopilot)}</div>
       <div class="row"><div class="icon-sq" style="background:var(--purple)">✦</div><div class="grow"><b>Confirmar con IA</b><div class="meta">${aiReady() ? 'Claude revisa cada apuesta y busca noticias' : 'Agrega tu clave de Anthropic en Más → Ajustes'}</div></div>${sw('sw-ai', s.aiConfirm, !aiReady())}</div>
+      <div class="row"><div class="icon-sq" style="background:var(--orange-fill)">🎓</div><div class="grow"><b>Modo práctica diaria</b><div class="meta">Al menos ${s.practicePerDay} apuestas ficticias al día de $${s.practiceStake ?? 10} con las mejores opciones disponibles, para aprender desde hoy · hoy: ${st.bets.filter((b) => b.source === 'práctica' && new Date(b.placedAt).toDateString() === new Date().toDateString()).length}/${s.practicePerDay}</div></div>${sw('sw-practice', s.practiceMode)}</div>
       <div class="row"><div class="icon-sq" style="background:var(--blue)">⏱</div><div class="grow"><b>Escaneo</b><div class="meta">Cada ${s.scanMinutes} min · última ${S.lastUpdate ? new Date(S.lastUpdate).toLocaleTimeString('es-MX') : '—'}</div></div><button class="btn small" id="scan-now">Escanear</button></div>
     </div>
     ${aiPaused() ? `<div class="warn mt"><b>IA en pausa</b> hasta las ${new Date(S.aiPause.until).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}: ${esc(S.aiPause.msg)}${s.aiConfirm ? ' Mientras tanto, el piloto automático no apuesta (espera la confirmación de la IA).' : ''}
@@ -439,7 +500,8 @@ function viewSection(sec) {
     : 'Momios de referencia (DraftKings vía ESPN) · % = probabilidad estimada por el bot';
   const head = (l, items) => {
     const live = items.filter((a) => a.ev.state === 'in').length;
-    return `<div class="league-head">${D.SPORT_ICON[l.sport]} ${esc(l.name)}${l.country ? ` <span class="note" style="font-weight:500">· ${esc(l.country)}</span>` : ''}
+    const logo = (l.id === 'lol' && items[0]?.ev.leagueLogo) || D.leagueLogo(l.id);
+    return `<div class="league-head">${logo ? `<img class="lg-logo" src="${esc(logo)}" alt="" loading="lazy" onerror="this.replaceWith(document.createTextNode('${D.SPORT_ICON[l.sport]}'))">` : D.SPORT_ICON[l.sport]} ${esc(l.name)}${l.country ? ` <span class="note" style="font-weight:500">· ${esc(l.country)}</span>` : ''}
       <span class="spacer"></span>${live ? `<span class="tag live"><span class="dot live"></span> ${live} en vivo</span>` : ''}<span class="meta note">${items.length}</span></div>`;
   };
   const empty = `<div class="widget glass empty">${S.lastUpdate ? 'No hay partidos para este filtro.' : 'Cargando partidos…'}${sel === 'lmb' ? '<br>La temporada de la LMB terminó en agosto; regresa en abril.' : ''}</div>`;
@@ -482,21 +544,21 @@ function viewGold() {
 
 // ---------- Banca ----------
 function betsTable(bets, compact = false) {
-  const st = (b) => ({ pending: '<span class="tag bet">Pendiente</span>', won: '<span class="tag value">Ganada</span>', lost: '<span class="tag live">Perdida</span>', void: '<span class="tag">Anulada</span>' }[b.status]);
+  const st = (b) => ({ pending: '<span class="tag bet">Pendiente</span>', won: '<span class="tag value">Ganada</span>', lost: '<span class="tag live">Perdida</span>', void: '<span class="tag">Anulada</span>', cashout: '<span class="tag gold">Cobrada antes</span>' }[b.status]);
   const casa = (b) => { const k = K.bookById(b.book); return k ? `<span class="tag" style="background:${k.color};color:#fff">${esc(k.name)}</span>` : '<span class="note">—</span>'; };
   return `<div class="table-wrap"><table class="t"><thead><tr><th>Partido</th><th>Selección</th><th>Casa</th><th class="num">Momio</th><th class="num">Monto</th>${compact ? '' : '<th class="num">EV</th><th>Fuente</th><th class="num">Resultado</th>'}<th></th></tr></thead><tbody>
   ${bets.map((b) => `<tr><td class="wrap"><b>${esc(b.home)}</b> vs ${esc(b.away)}<div class="note">${D.leagueById(b.leagueId)?.short || ''} · ${new Date(b.placedAt).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}${b.live ? ' · en vivo ' + esc(b.scoreAtBet) : ''}</div></td>
     <td class="wrap">${esc(b.label)}<div class="note">${esc(b.market)}</div></td><td>${casa(b)}</td>
     <td class="num">${dec(b.odds)}${b.oddsMx ? '<div class="note">MX</div>' : '<div class="note">ref.</div>'}</td>
     <td class="num">${money(b.stake)}</td>
-    ${compact ? '' : `<td class="num">${pct(b.ev, 1)}</td><td>${esc(SOURCE_LABEL[b.source] || b.source)}</td><td class="num">${b.status === 'won' ? `<b class="up">+${money(b.payout - b.stake)}</b>` : b.status === 'lost' ? `<b class="down">−${money(b.stake)}</b>` : ''}${b.finalScore ? `<div class="note">${esc(b.finalScore)}</div>` : ''}</td>`}
+    ${compact ? '' : `<td class="num">${pct(b.ev, 1)}</td><td>${esc(SOURCE_LABEL[b.source] || b.source)}</td><td class="num">${b.status === 'won' ? `<b class="up">+${money(b.payout - b.stake)}</b>` : b.status === 'lost' ? `<b class="down">−${money(b.stake)}</b>` : b.status === 'cashout' ? `<b class="${b.payout >= b.stake ? 'up' : 'down'}">${signed(b.payout - b.stake)}</b>` : ''}${b.finalScore ? `<div class="note">${esc(b.finalScore)}</div>` : ''}</td>`}
     <td>${b.status === 'pending' ? `${b.placedReal ? '<span class="tag value">Colocada</span> ' : ''}<button class="btn small" data-mx="${b.id}">Momio real</button> <button class="btn small danger" data-cancel="${b.id}">Anular</button>` : st(b)}</td></tr>`).join('')}
   </tbody></table></div>`;
 }
 
 // ¿Quién hizo la apuesta? El bot (piloto automático) o tú (manual), con o sin IA.
-const isBotBet = (b) => b.source === 'modelo' || b.source === 'IA';
-const SOURCE_LABEL = { modelo: '🤖 Bot', IA: '🤖 Bot + IA', manual: '👤 Tú', 'IA (manual)': '👤 Tú + IA' };
+const isBotBet = (b) => b.source === 'modelo' || b.source === 'IA' || b.source === 'práctica';
+const SOURCE_LABEL = { modelo: '🤖 Bot', IA: '🤖 Bot + IA', 'práctica': '🎓 Práctica', manual: '👤 Tú', 'IA (manual)': '👤 Tú + IA' };
 
 function myBetsSection() {
   const st = B.getState();
@@ -510,7 +572,7 @@ function myBetsSection() {
   const tab = groups[S.bankTab] ? S.bankTab : 'pending';
   const list = groups[tab];
   const staked = list.reduce((a, b) => a + b.stake, 0);
-  const net = list.reduce((a, b) => a + (b.status === 'won' ? b.payout - b.stake : b.status === 'lost' ? -b.stake : 0), 0);
+  const net = list.reduce((a, b) => a + (b.status === 'won' || b.status === 'cashout' ? b.payout - b.stake : b.status === 'lost' ? -b.stake : 0), 0);
   const summary = {
     pending: `${list.length} en juego · ${money(staked)} apostados · si todas ganan cobras ${money(list.reduce((a, b) => a + b.stake * b.odds, 0))}`,
     won: `${list.length} ganadas · apostaste ${money(staked)} · ganancia <b class="up">+${money(net)}</b>`,
@@ -696,6 +758,8 @@ function viewSettings() {
     ${num('minOdds', 'Momio mínimo', s.minOdds, 0.05, 'Evita favoritos muy cortos')}
     ${num('maxOdds', 'Momio máximo', s.maxOdds, 0.5, 'Evita longshots extremos')}
     ${num('maxBetsPerDay', 'Máximo de apuestas por día', s.maxBetsPerDay, 1, 'Disciplina del piloto automático')}
+    ${num('practicePerDay', 'Apuestas de práctica por día', s.practicePerDay, 1, 'Modo práctica: apuestas ficticias garantizadas cada día')}
+    ${num('practiceStake', 'Monto de cada práctica (MXN)', s.practiceStake ?? 10, 5, 'Bajo a propósito: es para aprender')}
     ${num('scanMinutes', 'Escanear cada (min)', s.scanMinutes, 1, 'Frecuencia de actualización')}
   </div></div>
   <div><div class="section-title" style="margin-top:4px">Apariencia</div><div class="list glass">
@@ -730,7 +794,7 @@ async function openMatch(k, tab = 'analysis') {
     await refreshLeague(lg).catch(() => {});
     try { const sum = await D.getSummary(lg, a.ev.id); S.summaries.set(k, sum); const cur = S.analysis.get(k); if (cur) analyze(cur.ev, S.tables.get(lg.id), sum.winProb); } catch {}
     renderSheet();
-  }, 30_000);
+  }, 15_000); // partido en vivo abierto: se actualiza cada 15 s
 }
 
 function closeSheets() {
@@ -875,9 +939,19 @@ function tabAI(a) {
   </div>`;
 }
 
+function predictionBlock(a) {
+  const pm = a.ev.pm;
+  if (!pm) return '<div class="note" style="margin-bottom:12px">Polymarket y Kalshi no tienen mercado para este partido.</div>';
+  const hasDraw = pm.draw != null;
+  return `<div class="widget" style="background:var(--fill);margin-bottom:12px"><h3>Mercados de predicción (dinero real)</h3><div class="table-wrap"><table class="t"><thead><tr><th>Fuente</th><th class="num">${esc(a.ev.home.name)}</th>${hasDraw ? '<th class="num">Empate</th>' : ''}<th class="num">${esc(a.ev.away.name)}</th><th class="num">Liquidez</th></tr></thead><tbody>
+    ${pm.sources.map((s) => `<tr><td><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.source)} ↗</a></td><td class="num">${pct(s.home, 1)}<div class="note">${s.askHome ? 'momio ' + dec(1 / s.askHome) : ''}</div></td>${hasDraw ? `<td class="num">${pct(s.draw, 1)}<div class="note">${s.askDraw ? 'momio ' + dec(1 / s.askDraw) : ''}</div></td>` : ''}<td class="num">${pct(s.away, 1)}<div class="note">${s.askAway ? 'momio ' + dec(1 / s.askAway) : ''}</div></td><td class="num">${s.liquidity ? '$' + Math.round(s.liquidity).toLocaleString('es-MX') : '—'}</td></tr>`).join('')}
+    <tr><td><b>Consenso</b></td><td class="num"><b>${pct(pm.home, 1)}</b></td>${hasDraw ? `<td class="num"><b>${pct(pm.draw, 1)}</b></td>` : ''}<td class="num"><b>${pct(pm.away, 1)}</b></td><td></td></tr></tbody></table></div>
+    <div class="note mt">Precio = probabilidad que el dinero real asigna (actualizado cada ~30 s, también en vivo). Si tu casa mexicana paga un momio mayor que 1 ÷ probabilidad, hay valor.</div></div>`;
+}
+
 function tabOdds(a) {
   const lg = D.leagueById(a.ev.leagueId);
-  if (lg.sport === 'esports') return `<div class="widget" style="background:var(--fill)"><h3>Momios de eSports</h3><p class="note">No hay momios gratis de eSports. Caliente, Codere, bet365 y Betano sí tienen mercados de ${esc(lg.name)}: abre el boleto y captura el momio que veas en cada casa. El bot calcula el EV con su probabilidad (${pct(a.sels[0]?.p, 1)} / ${pct(a.sels[1]?.p, 1)}) y te dice dónde conviene apostar.</p>
+  if (lg.sport === 'esports') return predictionBlock(a) + `<div class="widget" style="background:var(--fill)"><h3>Momios de eSports</h3><p class="note">Caliente, Codere, bet365 y Betano tienen mercados de ${esc(lg.name)}: abre el boleto y captura el momio que veas en cada casa. El bot calcula el EV con su probabilidad (${pct(a.sels[0]?.p, 1)} / ${pct(a.sels[1]?.p, 1)}) y te dice dónde conviene apostar.</p>
     <div class="flex">${a.sels.map((s) => `<div class="odd"><div class="k">${esc(s.label)}</div><div class="o">${dec(s.minOdds)}</div><div class="p">mínimo ${toAmerican(s.minOdds)}</div></div>`).join('')}</div>
     <p class="note mt">Datos de partidos: ${lg.source === 'lolesports' ? 'LoL Esports' : '<a href="https://liquipedia.net" target="_blank" rel="noopener">Liquipedia</a> (CC BY-SA 3.0)'}.</p></div>`;
   const o = a.ev.odds;
@@ -898,7 +972,7 @@ function tabOdds(a) {
     ${oa.books.sort((x, y) => (x.key === 'pinnacle' ? -1 : y.key === 'pinnacle' ? 1 : 0)).map((b) => `<tr><td>${b.key === 'pinnacle' ? '<b>Pinnacle (referencia sharp)</b>' : esc(b.title)}</td><td class="num">${dec(b.home)}</td>${oa.best.draw ? `<td class="num">${dec(b.draw)}</td>` : ''}<td class="num">${dec(b.away)}</td></tr>`).join('')}</tbody></table></div>
     <div class="note mt">Recuerda: solo puedes apostar en casas mexicanas. Usa estos momios para saber cuál es el precio justo.</div></div>`;
   else extra = `<button class="btn mt" data-oddsapi="${key(a.ev)}">Consultar Pinnacle y más casas</button>`;
-  return ref + extra;
+  return predictionBlock(a) + ref + extra;
 }
 
 // ---------- boleto: sección Apostar ----------
@@ -1022,9 +1096,46 @@ function toPlaceRow(b) {
     ${bk ? `<a class="btn small" href="${esc(bk.url)}" target="_blank" rel="noopener">Abrir ↗</a>` : ''}<button class="btn small primary" data-placed="${b.id}">Ya la coloqué</button></div>`;
 }
 
+// ---------- cobro anticipado (cash out) ----------
+// Valor justo de una apuesta en este momento = monto × momio × probabilidad actual de ganar.
+// Las casas suelen ofrecer un 5–10% menos que el valor justo: el bot te dice si su oferta es buena.
+function cashOutInfo(b) {
+  const a = [...S.analysis.values()].find((x) => x.ev.id === b.eventId && x.ev.leagueId === b.leagueId);
+  if (!a) return null;
+  let p = null;
+  const sel = a.sels.find((s) => s.pick === b.pick && s.market === b.market && (b.market !== 'Goles' || s.line === b.line));
+  if (sel) p = sel.p;
+  if (p == null) return null;
+  const full = b.stake * b.odds;
+  const fair = full * p;
+  return { a, p, fair, full, live: a.ev.state === 'in', profit: fair - b.stake };
+}
+
+function cashOutSection() {
+  const rows = B.pendingBets().map((b) => ({ b, c: cashOutInfo(b) })).filter((x) => x.c);
+  if (!rows.length) return '';
+  rows.sort((x, y) => (y.c.live - x.c.live) || (y.c.profit - x.c.profit));
+  return `<div class="section-title">💸 Cobro anticipado (cash out) <small>Cuánto vale hoy cada apuesta en juego</small></div>
+  <div class="list glass">${rows.map(({ b, c }) => {
+    const bk = K.bookById(b.book);
+    const good = c.fair * 0.95;
+    const adv = c.p >= 0.85 ? 'Muy probable que gane: mantenerla suele valer más que cobrar.'
+      : c.profit > 0 && c.live ? 'Va ganando. Si tu casa ofrece al menos el "mínimo aceptable", cobrar asegura ganancia sin regalar valor.'
+      : c.p < 0.25 && c.live ? 'Va perdiendo. Si te ofrecen algo cercano al valor justo, recuperar parte puede tener sentido.'
+      : 'Sin cambios importantes: normalmente conviene mantenerla.';
+    return `<div class="row" style="flex-wrap:wrap"><div class="icon-sq" style="background:${c.live ? 'var(--red-fill)' : 'var(--blue)'}">${c.live ? '●' : '⏳'}</div>
+      <div class="grow" style="min-width:220px"><b>${esc(b.label)}</b> <span class="note">· ${esc(b.home)} vs ${esc(b.away)}${c.live ? ' · <span class="down">EN VIVO ' + esc(c.a.ev.detail || '') + '</span>' : ''}</span>
+        <div class="meta">Apostaste ${money(b.stake)} @ ${dec(b.odds)} (cobro total ${money(c.full)}) · prob. actual ${pct(c.p)} · ${bk ? `${esc(bk.name)}: ${bk.cashout === true ? 'ofrece cash out' : 'cash out por verificar'}` : 'sin casa asignada'}</div>
+        <div class="meta">${esc(adv)}</div></div>
+      <div class="opp-nums"><div>Valor justo<b>${money(c.fair)}</b></div><div>Mínimo aceptable<b>${money(good)}</b></div></div>
+      <button class="btn small" data-cashout="${b.id}" data-amount="${good.toFixed(2)}" title="Simula cobrar ahora por el mínimo aceptable">Cobrar (simulado)</button></div>`;
+  }).join('')}</div>
+  <div class="note mt">Si tu casa te ofrece por la apuesta <b>al menos el "mínimo aceptable"</b>, cobrar es razonable. Si ofrece menos, te está cobrando una comisión alta. El retiro del dinero a tu banco depende de cada casa: revisa sus métodos (SPEI, OXXO, tarjeta) en su app.</div>`;
+}
+
 function viewBet() {
   const st = B.getState();
-  const toPlace = B.pendingBets().filter((b) => !b.placedReal);
+  const toPlace = B.pendingBets().filter((b) => !b.placedReal && b.source !== 'práctica');
   const recs = allAnalyses().filter((a) => a.ev.state === 'pre').flatMap((a) => a.sels.filter((s) => s.value).map((s) => ({ a, s }))).sort((x, y) => y.s.ev - x.s.ev).slice(0, 10);
   const golds = allAnalyses().flatMap((a) => a.golden.map((g) => ({ a, g }))).sort((x, y) => y.g.score - x.g.score).slice(0, 4);
   const inGold = new Set(golds.map(({ a, g }) => key(a.ev) + (g.sel?.pick || g.pick)));
@@ -1038,6 +1149,7 @@ function viewBet() {
     <div class="section-title">Por colocar en tu casa <small>${toPlace.length}</small></div>
     ${toPlace.length ? `<div class="list glass">${toPlace.map(toPlaceRow).join('')}</div>` : '<div class="widget glass empty">No tienes apuestas pendientes de colocar.</div>'}
     <div class="note mt">Las apuestas se registran en tu banca ficticia. Si decides apostar de verdad, colócala en la casa indicada y marca "Ya la coloqué" para llevar el control.</div>
+    ${cashOutSection()}
   </div><aside>
     <div class="section-title" style="margin-top:0">Recomendadas ahora</div>
     ${recs.length || golds.length ? `<div class="list glass">${golds.map(({ a, g }) => recRow(a, g.sel || null, g)).join('')}${recsOnly.map(({ a, s }) => recRow(a, s)).join('')}</div>` : '<div class="widget glass empty">Ninguna selección tiene valor ahora mismo.</div>'}
@@ -1085,7 +1197,7 @@ function collectNotifications() {
 
 // Noticias que pueden mover tus apuestas: equipos en el boleto o con apuestas pendientes.
 async function loadRelevantNews() {
-  if (Date.now() - S.newsCheckedAt < 10 * 60_000) return;
+  if (Date.now() - S.newsCheckedAt < 3 * 60_000) return;
   S.newsCheckedAt = Date.now();
   const st = B.getState();
   const teams = [...new Set([...B.pendingBets().flatMap((b) => [b.home, b.away]), ...st.slip.flatMap((s) => [s.home, s.away])])].slice(0, 6);
@@ -1245,7 +1357,7 @@ async function updateAction(kind) {
 
 // ---------- eventos ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-betsource],[data-airetry],[data-phoneenable],[data-notifread],[data-notifall],[data-notiffilter],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
+  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-betsource],[data-cashout],[data-airetry],[data-phoneenable],[data-notifread],[data-notifall],[data-notiffilter],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
   if (!t) return;
   // Notificaciones: tocar una la marca como leída (y luego abre su partido o enlace); ✓ solo la marca.
   if (t.dataset.notifread) {
@@ -1289,6 +1401,11 @@ document.addEventListener('click', async (e) => {
       S.cfg = await D.getConfig();
     } catch (err) { toast('⚠️ ' + err.message, 6000); }
     render();
+    return;
+  }
+  if (t.dataset.cashout) {
+    const amt = Number(t.dataset.amount);
+    if (confirm(`¿Cobrar ahora esta apuesta por ${money(amt)}? (simulado, en tu banca ficticia)`)) { B.cashOut(t.dataset.cashout, amt); toast('💸 Cobro anticipado registrado'); render(); }
     return;
   }
   if (t.dataset.airetry !== undefined) { S.aiPause = null; toast('Reintentando la IA…'); refreshAll(); return; }
@@ -1337,6 +1454,11 @@ document.addEventListener('change', (e) => {
     render(); if (t.checked) refreshAll();
   }
   if (t.id === 'sw-ai') { B.updateSettings({ aiConfirm: t.checked }); render(); }
+  if (t.id === 'sw-practice') {
+    B.updateSettings(t.checked ? { practiceMode: true, autopilotDevice: B.getState().settings.autopilotDevice || B.deviceId } : { practiceMode: false });
+    B.log(t.checked ? 'Modo práctica diaria activado' : 'Modo práctica diaria en pausa');
+    render(); if (t.checked) refreshAll();
+  }
   if (t.dataset.bookon) { B.updateBook(t.dataset.bookon, { enabled: t.checked }); render(); }
   if (t.dataset.bookbal) { B.updateBook(t.dataset.bookbal, { balance: t.value === '' ? null : Number(t.value) }); toast('Saldo guardado'); render(); }
   if (t.dataset.setting) { const v = Number(t.value); if (Number.isFinite(v)) { B.updateSettings({ [t.dataset.setting]: v }); toast('Ajuste guardado'); if (t.dataset.setting === 'scanMinutes') schedule(); } }
@@ -1376,6 +1498,24 @@ function schedule() {
   scanTimer = setInterval(refreshAll, Math.max(1, B.getState().settings.scanMinutes) * 60_000);
 }
 
+// Tiempo real: cada 15 s se actualizan solo las ligas con partidos en vivo (o por empezar en 10 min):
+// marcadores, probabilidades en vivo, precios de Polymarket/Kalshi y liquidación de apuestas.
+let liveBusy = false;
+async function liveTick() {
+  if (S.scanning || liveBusy || document.hidden) return;
+  const soon = (e) => e.state === 'in' || (e.state === 'pre' && new Date(e.date) - Date.now() < 10 * 60_000 && new Date(e.date) - Date.now() > -4 * 3600_000);
+  const leagues = D.LEAGUES.filter((lg) => (S.events.get(lg.id) || []).some(soon));
+  if (!leagues.length) return;
+  liveBusy = true;
+  try {
+    await Promise.allSettled(leagues.map((lg) => refreshLeague(lg)));
+    const events = allEvents();
+    B.settleWithEvents(events); B.settleShadow(events);
+    S.lastUpdate = Date.now();
+    render();
+  } finally { liveBusy = false; }
+}
+
 // ---------- arranque ----------
 (async function init() {
   try { applyTheme(); } catch {}
@@ -1386,8 +1526,18 @@ function schedule() {
   B.onConflict(() => { toast('↻ Se sincronizaron cambios hechos desde otro dispositivo'); render(); });
   render();
   window.__bbStarted = true; // la app ya se pintó: el aviso de error de arranque ya no aplica
+  // Datos en tiempo real: escaneo completo cada minuto (si tenías el valor anterior de 3 min, se ajusta a 1).
+  if (!B.getState().settings.rt13) B.updateSettings({ scanMinutes: Math.min(B.getState().settings.scanMinutes, 1), rt13: true });
+  if (!B.getState().settings.w13) {
+    // Pesos más prudentes para modelos con menos información (tenis por ranking, eSports por Elo propio).
+    const w = B.getState().weights;
+    if (w.tennis >= 0.5) w.tennis = 0.25;
+    if (w.esports >= 0.5) w.esports = 0.35;
+    B.updateSettings({ w13: true });
+  }
   await refreshAll();
   schedule();
+  setInterval(liveTick, 15_000);
   // Sincroniza con otros dispositivos (PC ↔ celular).
   setInterval(async () => { if (await B.pullState()) render(); }, 30_000);
   document.addEventListener('visibilitychange', async () => { if (!document.hidden && await B.pullState()) render(); });

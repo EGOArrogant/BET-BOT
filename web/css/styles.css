@@ -370,6 +370,8 @@ button.pill { border: 0; cursor: pointer; }
 .notif.unread { background: color-mix(in srgb, var(--blue) 10%, transparent); }
 .notif .ni { width: 34px; height: 34px; border-radius: 10px; background: var(--fill); display: grid; place-items: center; flex: none; font-size: 17px; }
 .notif .nt { font-weight: 600; font-size: 14px; }
+.lg-logo { width: 24px; height: 24px; object-fit: contain; border-radius: 6px; vertical-align: middle; }
+.lg-mini { width: 16px; height: 16px; object-fit: contain; flex: none; }
 .notif-row { display: flex; align-items: center; gap: 4px; }
 .notif-row .notif { flex: 1; min-width: 0; }
 .notif-row.read .notif { opacity: 0.55; padding-top: 8px; padding-bottom: 8px; }

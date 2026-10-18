@@ -38,7 +38,19 @@ export const STRATEGY_HTML = `
 <h4>9. Varianza y paciencia</h4>
 <p>Con un EV de 3% y momios cercanos a 2.0, hacen falta cientos de apuestas para distinguir habilidad de suerte. Son normales las rachas de 8 a 10 apuestas perdidas seguidas. La regla del bot: <b>mínimo 300 a 500 apuestas simuladas con CLV y ROI positivos antes de pensar en dinero real.</b></p>
 
-<h4>10. Disciplina y juego responsable</h4>
+<h4>10. Mercados de predicción: Polymarket y Kalshi</h4>
+<p>Son bolsas donde la gente compra y vende contratos sobre resultados con dinero real. Si el contrato "gana el América" cuesta 0.62, el mercado le da 62% de probabilidad. Con mucha liquidez, sus precios están entre los más precisos que existen. El bot los usa así:</p>
+<ul>
+<li>Los <b>promedia con las casas</b> (sin margen) para obtener el consenso del mercado.</li>
+<li>Los usa como <b>precio de referencia</b> cuando no hay momio de casa, como en eSports o algunos partidos de tenis.</li>
+<li>Como se actualizan <b>en vivo</b>, los usa para detectar remontadas mal pagadas durante el partido.</li>
+</ul>
+<p>Cuando tu casa mexicana paga más que lo que implica Polymarket o Kalshi, es una buena señal de valor. El bot solo <b>lee</b> sus precios; no opera en esos sitios.</p>
+
+<h4>11. Modo práctica y aprendizaje</h4>
+<p>Para no esperar días a que aparezca una apuesta con mucho valor, el modo práctica hace cada día unas pocas apuestas ficticias al monto mínimo, eligiendo las mejores opciones disponibles. Además, las apuestas sombra registran todo lo que el bot habría apostado. Con los resultados, el bot aprende qué deportes, mercados y rangos de momio le funcionan, y deja de apostar en los que pierden.</p>
+
+<h4>12. Disciplina y juego responsable</h4>
 <ul>
 <li>No perseguir pérdidas ni subir el monto después de perder.</li>
 <li>Usar solo dinero que puedes perder sin afectar tus gastos.</li>

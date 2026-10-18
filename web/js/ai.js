@@ -34,6 +34,14 @@ Cómo decides:
 - En vivo considera tiempo restante, expulsiones, lesiones durante el juego, dominio en estadísticas y que los momios en vivo cambian rápido.
 - Usa la búsqueda web para confirmar alineaciones, lesiones, noticias de última hora y opiniones de analistas antes de decidir. Prefiere fuentes recientes y cita lo relevante en noticias_clave.
 - Sé honesto con la incertidumbre. La confianza va de 1 a 10.
+- Los mercados de predicción (Polymarket y Kalshi) operan con dinero real: su precio es una probabilidad, y cuanto más líquido es el mercado (liquidez_usd alta), más confiable. Cuando una casa difiere mucho del consenso de Polymarket/Kalshi/Pinnacle, normalmente la casa es la que está desfasada. Ahí suele estar el valor.
+- Conocimiento clave por deporte:
+  · Fútbol: la localía vale ~0.3 goles. Hay rotaciones tras jugar Champions entre semana. Los empates están infravalorados en partidos parejos de pocos goles. La Liga MX tiene alta varianza y mucha localía por la altura (Toluca, Pachuca, CDMX).
+  · NFL: el clima (viento >25 km/h) baja los totales. Las bajas del QB titular mueven 3 a 7 puntos. Juegos tras semana corta (jueves) favorecen al local.
+  · NBA: los back-to-back y el descanso de estrellas (load management) mueven mucho. Revisa los reportes de lesiones 30 minutos antes.
+  · MLB/LMB: el abridor probable es el factor #1. El parque y el viento afectan los totales.
+  · Tenis: la superficie, la fatiga del torneo anterior y los retiros. El ranking ATP/WTA reacciona lento a la forma reciente.
+  · eSports: los cambios de roster y de parche, el formato BO1 (más aleatorio) contra BO3/BO5, y la región (LCK/LPL suelen dominar en LoL).
 - Responde en español de México.`;
 
 const SCHEMA = {

@@ -8,16 +8,18 @@
 // group: 'mx' = opera en México (verifica su permiso SEGOB vigente)
 //        'intl' = sitio internacional al que se puede entrar desde México, SIN permiso SEGOB:
 //                 no tienes protección legal si no te paga o congela tu cuenta. Úsalos bajo tu propio riesgo.
+// cashout: true = la casa ofrece "Cobrar"/Cash Out en muchos mercados; 'verificar' = no confirmado.
 export const BOOKS = [
-  { id: 'caliente', name: 'Caliente', url: 'https://www.caliente.mx', color: '#e4002b', group: 'mx' },
-  { id: 'codere', name: 'Codere', url: 'https://www.codere.mx', color: '#79c000', group: 'mx' },
-  { id: 'bet365', name: 'bet365', url: 'https://www.bet365.mx', color: '#126e51', group: 'mx' },
-  { id: 'betano', name: 'Betano', url: 'https://www.betano.mx', color: '#ff6a13', group: 'mx' },
-  { id: 'rushbet', name: 'RushBet', url: 'https://www.rushbet.mx', color: '#1f4fd8', group: 'mx' },
-  { id: 'strendus', name: 'Strendus', url: 'https://www.strendus.com.mx', color: '#7b2cbf', group: 'mx' },
-  { id: 'playdoit', name: 'Playdoit', url: 'https://www.playdoit.mx', color: '#00a3e0', group: 'mx' },
-  { id: 'novibet', name: 'Novibet', url: 'https://www.novibet.mx', color: '#0b3d91', group: 'mx' },
-  { id: 'betway', name: 'Betway', url: 'https://betway.mx', color: '#111111', group: 'mx' },
+  { id: 'caliente', name: 'Caliente', url: 'https://www.caliente.mx', color: '#e4002b', group: 'mx', cashout: true },
+  { id: 'codere', name: 'Codere', url: 'https://www.codere.mx', color: '#79c000', group: 'mx', cashout: true },
+  { id: 'bet365', name: 'bet365', url: 'https://www.bet365.mx', color: '#126e51', group: 'mx', cashout: true },
+  { id: 'betano', name: 'Betano', url: 'https://www.betano.mx', color: '#ff6a13', group: 'mx', cashout: true },
+  { id: 'draftea', name: 'Draftea', url: 'https://draftea.com', color: '#00c853', group: 'mx', cashout: 'verificar', note: 'Plataforma mexicana de deportes y fantasy.' },
+  { id: 'playdoit', name: 'Playdoit', url: 'https://www.playdoit.mx', color: '#00a3e0', group: 'mx', cashout: 'verificar' },
+  { id: 'rushbet', name: 'RushBet', url: 'https://www.rushbet.mx', color: '#1f4fd8', group: 'mx', cashout: 'verificar' },
+  { id: 'strendus', name: 'Strendus', url: 'https://www.strendus.com.mx', color: '#7b2cbf', group: 'mx', cashout: 'verificar' },
+  { id: 'novibet', name: 'Novibet', url: 'https://www.novibet.mx', color: '#0b3d91', group: 'mx', cashout: 'verificar' },
+  { id: 'betway', name: 'Betway', url: 'https://betway.mx', color: '#111111', group: 'mx', cashout: 'verificar' },
   { id: 'pinnacle', name: 'Pinnacle', url: 'https://www.pinnacle.com', color: '#c8102e', group: 'intl', note: 'Margen más bajo del mercado; su momio es la referencia "justa".' },
   { id: 'stake', name: 'Stake', url: 'https://stake.mx', color: '#1a2c38', group: 'intl', note: 'Anunció su entrada a México; confirma si ya tiene permiso.' },
   { id: 'bwin', name: 'bwin', url: 'https://www.bwin.com', color: '#ffcc00', group: 'intl' },

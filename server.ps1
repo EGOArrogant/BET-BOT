@@ -28,9 +28,10 @@ if (-not (Test-Path $tokenPath)) {
 }
 $token = ([IO.File]::ReadAllText($tokenPath)).Trim()
 
-$proxyHosts = @('news.google.com', 'liquipedia.net')
+$proxyHosts = @('news.google.com', 'liquipedia.net', 'api.elections.kalshi.com')
 # Liquipedia pide: gzip, User-Agent identificable y maximo 1 consulta "parse" cada 30 s.
 $proxyCache = @{}
+$imgCache = @{}
 $script:lastLiquipedia = [DateTime]::MinValue
 $mime = @{
   '.html' = 'text/html; charset=utf-8'; '.js' = 'text/javascript; charset=utf-8'
@@ -64,11 +65,11 @@ function Set-EnvValues([hashtable]$vals) {
   [IO.File]::WriteAllLines($envPath, $out, $utf8)
 }
 
-function Send-Bytes($ctx, [byte[]]$bytes, [string]$type, [int]$status = 200) {
+function Send-Bytes($ctx, [byte[]]$bytes, [string]$type, [int]$status = 200, [string]$cacheControl = 'no-store') {
   $res = $ctx.Response
   $res.StatusCode = $status
   $res.ContentType = $type
-  $res.Headers['Cache-Control'] = 'no-store'
+  $res.Headers['Cache-Control'] = $cacheControl
   $res.ContentLength64 = $bytes.Length
   # Las peticiones HEAD (revisiones de "esta vivo?") no llevan cuerpo.
   if ($ctx.Request.HttpMethod -ne 'HEAD') { $res.OutputStream.Write($bytes, 0, $bytes.Length) }
@@ -230,12 +231,27 @@ try {
         if ($rem) { $ctx.Response.Headers['X-Requests-Remaining'] = $rem }
         Send-Bytes $ctx $r.bytes 'application/json; charset=utf-8' $r.status
       }
+      elseif ($path -eq '/api/img') {
+        # Logos de equipos de Liquipedia (no permiten cargarlos directo desde otra página): se piden aquí y se guardan en memoria.
+        $target = [Uri]$req.QueryString['u']
+        if ($target.Host -ne 'liquipedia.net' -or -not $target.AbsolutePath.StartsWith('/commons/images/')) { Send-Text $ctx '{"error":"imagen no permitida"}' 'application/json' 403; continue }
+        $key = $target.AbsoluteUri
+        $hit = $imgCache[$key]
+        if (-not $hit) {
+          $r = Invoke-Forward 'GET' $key @{ 'Accept' = 'image/*' } $null 20
+          if ($r.status -ne 200) { Send-Text $ctx '' 'text/plain' $r.status; continue }
+          $hit = @{ bytes = $r.bytes; type = $r.type }
+          if ($imgCache.Count -gt 500) { $imgCache.Clear() }
+          $imgCache[$key] = $hit
+        }
+        Send-Bytes $ctx $hit.bytes $hit.type 200 'public, max-age=86400'
+      }
       elseif ($path -eq '/api/proxy') {
         $target = [Uri]$req.QueryString['url']
         if ($proxyHosts -notcontains $target.Host) { Send-Text $ctx '{"error":"host no permitido"}' 'application/json' 403; continue }
         $key = $target.AbsoluteUri
         $isLp = $target.Host -eq 'liquipedia.net'
-        $ttl = if ($isLp) { 300 } else { 120 }
+        $ttl = if ($isLp) { 60 } elseif ($target.Host -eq 'api.elections.kalshi.com') { 20 } else { 60 }
         $hit = $proxyCache[$key]
         if ($hit -and ((Get-Date) - $hit.t).TotalSeconds -lt $ttl) { Send-Text $ctx $hit.v 'text/plain; charset=utf-8'; continue }
         if ($isLp) {
@@ -249,7 +265,7 @@ try {
           $script:lastLiquipedia = Get-Date
           $r = Invoke-Forward 'GET' $target.AbsoluteUri @{ 'Accept-Encoding' = 'gzip' } $null 30
         } else {
-          $r = Invoke-Forward 'GET' $target.AbsoluteUri @{} $null 20
+          $r = Invoke-Forward 'GET' $target.AbsoluteUri @{ 'User-Agent' = 'Mozilla/5.0 (compatible; BetBotMX/1.3)'; 'Accept' = 'application/json, text/xml, */*' } $null 20
         }
         $text = $utf8.GetString($r.bytes)
         if ($r.status -eq 200) { $proxyCache[$key] = @{ t = Get-Date; v = $text } }
