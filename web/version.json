@@ -1,8 +1,11 @@
 {
-  "version": "1.2.1",
+  "version": "1.2.2",
   "date": "2026-10-17",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Banca: sección Mis apuestas al inicio con pestañas En juego, Ganadas, Perdidas y Todas, con totales",
+    "Filtro para ver solo las apuestas del bot o solo las tuyas",
+    "Inicio: accesos directos a ganadas, perdidas y todas tus apuestas",
     "Celular: detecta si la red de Windows está como Pública (bloquea al teléfono) y explica cómo cambiarla",
     "Pantalla de carga y aviso de error visible en lugar de una pantalla negra",
     "Botón de código QR en el encabezado y activación del celular con un clic (con el aviso de Windows)",

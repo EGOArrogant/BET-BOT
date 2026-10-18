@@ -46,7 +46,7 @@ const S = {
   cfg: {}, tab: 'home', secLeague: { soccer: 'all', sports: 'all', esports: 'all' }, matchFilter: 'upcoming',
   events: new Map(), tables: new Map(), analysis: new Map(), summaries: new Map(), ai: new Map(), oddsApi: new Map(),
   lastUpdate: null, scanning: false, open: null, sheetTab: 'analysis',
-  moreTab: 'tables', tablesLeague: 'uefa.champions', newsLeague: 'mex.1', bankTab: 'pending', newsQuery: '',
+  moreTab: 'tables', tablesLeague: 'uefa.champions', newsLeague: 'mex.1', bankTab: 'pending', betSource: 'all', newsQuery: '',
   oddsResearch: new Map(), notifs: [], newsNotifs: [], newsCheckedAt: 0, goldFirstSeen: new Map(),
   version: null, update: null, pendingRender: false,
 };
@@ -358,7 +358,7 @@ function viewHome() {
   <div class="section-title">Valor detectado <small>EV positivo con momio de referencia</small></div>
   ${values.length ? `<div class="league-block glass">${values.map(({ s, a }) => valueRow(s, a)).join('')}</div>` : `<div class="widget glass empty">Ninguna selección supera el EV mínimo ahora mismo. Así se ve un mercado eficiente: no apostar también es una decisión.</div>`}
   <div class="grid halves mt">
-    <div class="widget glass"><h3>Apuestas pendientes</h3>${pend.length ? betsTable(pend, true) : '<div class="empty">Sin apuestas pendientes</div>'}</div>
+    <div class="widget glass"><h3>Mis apuestas en juego <span class="flex" style="text-transform:none;letter-spacing:0;gap:6px"><button class="btn small" data-banktab="won">✅ ${st.bets.filter((b) => b.status === 'won').length}</button><button class="btn small" data-banktab="lost">❌ ${st.bets.filter((b) => b.status === 'lost').length}</button><button class="btn small" data-banktab="all">Ver todas</button></span></h3>${pend.length ? betsTable(pend, true) : '<div class="empty">Sin apuestas en juego</div>'}</div>
     <div class="widget glass"><h3>Actividad del bot</h3>${logList(10)}</div>
   </div>`;
 }
@@ -489,23 +489,54 @@ function betsTable(bets, compact = false) {
     <td class="wrap">${esc(b.label)}<div class="note">${esc(b.market)}</div></td><td>${casa(b)}</td>
     <td class="num">${dec(b.odds)}${b.oddsMx ? '<div class="note">MX</div>' : '<div class="note">ref.</div>'}</td>
     <td class="num">${money(b.stake)}</td>
-    ${compact ? '' : `<td class="num">${pct(b.ev, 1)}</td><td>${esc(b.source)}</td><td class="num">${b.status === 'won' ? `<b class="up">+${money(b.payout - b.stake)}</b>` : b.status === 'lost' ? `<b class="down">−${money(b.stake)}</b>` : ''}${b.finalScore ? `<div class="note">${esc(b.finalScore)}</div>` : ''}</td>`}
+    ${compact ? '' : `<td class="num">${pct(b.ev, 1)}</td><td>${esc(SOURCE_LABEL[b.source] || b.source)}</td><td class="num">${b.status === 'won' ? `<b class="up">+${money(b.payout - b.stake)}</b>` : b.status === 'lost' ? `<b class="down">−${money(b.stake)}</b>` : ''}${b.finalScore ? `<div class="note">${esc(b.finalScore)}</div>` : ''}</td>`}
     <td>${b.status === 'pending' ? `${b.placedReal ? '<span class="tag value">Colocada</span> ' : ''}<button class="btn small" data-mx="${b.id}">Momio real</button> <button class="btn small danger" data-cancel="${b.id}">Anular</button>` : st(b)}</td></tr>`).join('')}
   </tbody></table></div>`;
 }
 
+// ¿Quién hizo la apuesta? El bot (piloto automático) o tú (manual), con o sin IA.
+const isBotBet = (b) => b.source === 'modelo' || b.source === 'IA';
+const SOURCE_LABEL = { modelo: '🤖 Bot', IA: '🤖 Bot + IA', manual: '👤 Tú', 'IA (manual)': '👤 Tú + IA' };
+
+function myBetsSection() {
+  const st = B.getState();
+  const bySource = st.bets.filter((b) => (S.betSource === 'bot' ? isBotBet(b) : S.betSource === 'manual' ? !isBotBet(b) : true));
+  const groups = {
+    pending: bySource.filter((b) => b.status === 'pending'),
+    won: bySource.filter((b) => b.status === 'won'),
+    lost: bySource.filter((b) => b.status === 'lost'),
+    all: bySource,
+  };
+  const tab = groups[S.bankTab] ? S.bankTab : 'pending';
+  const list = groups[tab];
+  const staked = list.reduce((a, b) => a + b.stake, 0);
+  const net = list.reduce((a, b) => a + (b.status === 'won' ? b.payout - b.stake : b.status === 'lost' ? -b.stake : 0), 0);
+  const summary = {
+    pending: `${list.length} en juego · ${money(staked)} apostados · si todas ganan cobras ${money(list.reduce((a, b) => a + b.stake * b.odds, 0))}`,
+    won: `${list.length} ganadas · apostaste ${money(staked)} · ganancia <b class="up">+${money(net)}</b>`,
+    lost: `${list.length} perdidas · <b class="down">−${money(-net)}</b>`,
+    all: `${list.length} apuestas · resultado neto <b class="${net >= 0 ? 'up' : 'down'}">${signed(net)}</b>`,
+  }[tab];
+  const tabs = [['pending', '⏳ En juego'], ['won', '✅ Ganadas'], ['lost', '❌ Perdidas'], ['all', 'Todas']];
+  const sources = [['all', 'Todas'], ['bot', '🤖 Del bot'], ['manual', '👤 Mías']];
+  const sorted = [...list].sort((a, b) => (b.settledAt || b.placedAt) - (a.settledAt || a.placedAt));
+  return `<div class="section-title">Mis apuestas <small>Con dinero ficticio</small></div>
+  <div class="flex tabs-inline"><div class="segmented">${tabs.map(([k, l]) => `<button data-banktab="${k}" class="${tab === k ? 'active' : ''}">${l} (${groups[k].length})</button>`).join('')}</div>
+    <div class="segmented">${sources.map(([k, l]) => `<button data-betsource="${k}" class="${S.betSource === k ? 'active' : ''}">${l}</button>`).join('')}</div></div>
+  <div class="widget glass"><div class="note" style="margin-bottom:8px">${summary}</div>
+    ${sorted.length ? betsTable(sorted) : `<div class="empty">${{ pending: 'No hay apuestas en juego ahora.', won: 'Todavía no hay apuestas ganadas.', lost: 'Todavía no hay apuestas perdidas.', all: 'Todavía no hay apuestas.' }[tab]}${S.betSource === 'bot' ? '<br>Activa el piloto automático en Inicio para que el bot opere solo.' : ''}</div>`}</div>`;
+}
+
 function viewBank() {
   const st = B.getState(), m = B.metrics(), L = B.learningStats();
-  const bets = S.bankTab === 'pending' ? B.pendingBets() : st.bets.filter((b) => b.status !== 'pending');
   const sports = Object.entries(m.bySport);
   return `${kpis()}
+  ${myBetsSection()}
   <div class="grid two mt">
     <div class="widget glass"><h3>Evolución de la banca</h3><div class="chart" id="equity"></div></div>
     <div class="widget glass"><h3>Por deporte</h3>${sports.length ? `<table class="t"><thead><tr><th>Deporte</th><th class="num">Apuestas</th><th class="num">Ganancia</th><th class="num">ROI</th></tr></thead><tbody>
       ${sports.map(([s, v]) => `<tr><td>${D.SPORT_ICON[s]} ${D.SPORT_NAME[s]}</td><td class="num">${v.n}</td><td class="num ${v.profit >= 0 ? 'up' : 'down'}">${signed(v.profit)}</td><td class="num">${pct(v.profit / v.staked, 1)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Aún no hay apuestas liquidadas</div>'}</div>
   </div>
-  <div class="section-title">Apuestas <div class="segmented"><button data-banktab="pending" class="${S.bankTab === 'pending' ? 'active' : ''}">Pendientes (${B.pendingBets().length})</button><button data-banktab="history" class="${S.bankTab === 'history' ? 'active' : ''}">Historial</button></div></div>
-  <div class="widget glass">${bets.length ? betsTable(bets) : '<div class="empty">Nada por aquí todavía</div>'}</div>
   ${shadowSection()}
   <div class="section-title">Precisión del modelo <small>Frente al mercado (Brier: menor es mejor)</small></div>
   <div class="widget glass"><table class="t"><thead><tr><th>Deporte</th><th class="num">Partidos evaluados</th><th class="num">Acierto del favorito</th><th class="num">Brier modelo</th><th class="num">Brier mercado</th><th class="num">Peso del modelo</th></tr></thead><tbody>
@@ -1214,7 +1245,7 @@ async function updateAction(kind) {
 
 // ---------- eventos ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-airetry],[data-phoneenable],[data-notifread],[data-notifall],[data-notiffilter],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
+  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-betsource],[data-airetry],[data-phoneenable],[data-notifread],[data-notifall],[data-notiffilter],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
   if (!t) return;
   // Notificaciones: tocar una la marca como leída (y luego abre su partido o enlace); ✓ solo la marca.
   if (t.dataset.notifread) {
@@ -1234,7 +1265,8 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.secleague) { const [sec, id] = t.dataset.secleague.split('|'); S.secLeague[sec] = id; if (S.tab !== sec) S.tab = sec; render(); return; }
   if (t.dataset.mfilter) { S.matchFilter = t.dataset.mfilter; render(); return; }
   if (t.dataset.stab) { S.sheetTab = t.dataset.stab; renderSheet(); return; }
-  if (t.dataset.banktab) { S.bankTab = t.dataset.banktab; render(); return; }
+  if (t.dataset.banktab) { S.bankTab = t.dataset.banktab; if (S.tab !== 'bank') go('bank'); else render(); return; }
+  if (t.dataset.betsource) { S.betSource = t.dataset.betsource; render(); return; }
   if (t.dataset.more) { S.moreTab = t.dataset.more; render(); return; }
   if (t.dataset.tablesleague) { S.tablesLeague = t.dataset.tablesleague; render(); return; }
   if (t.dataset.newsleague) { S.newsLeague = t.dataset.newsleague; S.newsQuery = ''; render(); return; }
