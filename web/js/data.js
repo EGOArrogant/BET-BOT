@@ -484,6 +484,44 @@ export async function getSummary(league, eventId) {
   };
 }
 
+// ---------- Transfermarkt: valor de mercado de la plantilla ----------
+// Indicador de la fuerza "en papel" de cada club. Se busca por nombre y se guarda 24 h (en el servidor y aquí).
+const tmCache = new Map();
+const tmNum = (s) => { const m = String(s).replace(/\./g, '').match(/([\d,]+)\s*(mil mill|mill|mil)/i); if (!m) return null; const v = parseFloat(m[1].replace(',', '.')); return m[2].toLowerCase() === 'mil mill' ? v * 1e9 : m[2].toLowerCase() === 'mill' ? v * 1e6 : v * 1e3; };
+export async function squadValue(teamName) {
+  const q = String(teamName || '').replace(/\b(FC|CF|SC|AC|Club|de|del)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+  if (!q) return null;
+  if (tmCache.has(q)) return tmCache.get(q);
+  const p = (async () => {
+    const url = `https://www.transfermarkt.es/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(q)}`;
+    const res = await fetch('/api/proxy?url=' + encodeURIComponent(url));
+    if (!res.ok) throw new Error('Transfermarkt HTTP ' + res.status);
+    const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+    // Solo filas de la tabla de resultados de clubes (tienen valor en €), y el club cuyo nombre coincide
+    // (no equipos sub-21/sub-23, reservas ni femeniles).
+    const norm = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]/g, ' ');
+    const words = norm(q).split(/\s+/).filter((w) => w.length >= 3);
+    const rows = [...doc.querySelectorAll('table.items tr')].filter((tr) => tr.querySelector('a[href*="/startseite/verein/"]') && /€/.test(tr.textContent));
+    const pick = rows.map((tr) => {
+      const a = [...tr.querySelectorAll('a[href*="/startseite/verein/"]')].find((x) => x.textContent.trim());
+      const n = norm(a?.textContent || '');
+      const score = words.filter((w) => n.includes(w)).length - (/\b(u\d\d|sub|ii|fem|women|reserv)\b/.test(n) ? 5 : 0);
+      return { tr, a, score };
+    }).filter((x) => x.a && x.score > 0).sort((x, y) => y.score - x.score)[0];
+    if (!pick) return null;
+    const main = pick.a, row = pick.tr;
+    const cells = [...row.querySelectorAll('td')].map((td) => td.textContent.trim()).filter(Boolean);
+    const valueTxt = cells.find((c) => /€/.test(c)) || '';
+    return {
+      name: main.textContent.trim(), url: 'https://www.transfermarkt.es' + main.getAttribute('href'),
+      league: row.querySelector('a[href*="/wettbewerb/"]')?.textContent.trim() || '', squad: Number(cells.find((c) => /^\d+$/.test(c))) || null,
+      valueTxt, value: tmNum(valueTxt),
+    };
+  })().catch(() => null);
+  tmCache.set(q, p);
+  return p;
+}
+
 // ---------- Noticias ----------
 export async function getLeagueNews(league) {
   if (league.sport === 'esports') return searchNews(`${league.name} esports`, 10);

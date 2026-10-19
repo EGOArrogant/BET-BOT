@@ -314,6 +314,7 @@ async function buildContext(a) {
       peleador_2: { nombre: a.ev.away.name, record: a.ev.away.record, pais: a.ev.away.flag, cinturones: a.ev.away.belts, estadisticas: a.ev.away.athleteId ? await fighterData(a.ev.away) : null },
       mercados_de_metodo: (a.ev.pm?.sources || []).flatMap((s) => (s.props || []).map((p) => ({ pregunta: p.q, si: p.prices[0], operado: p.traded }))),
     } : undefined,
+    valor_plantilla_transfermarkt: a.ev.sport === 'soccer' ? await Promise.all([D.squadValue(a.ev.home.name), D.squadValue(a.ev.away.name)]).then(([h, w]) => (h || w ? { local: h && { club: h.name, valor: h.valueTxt, jugadores: h.squad }, visitante: w && { club: w.name, valor: w.valueTxt, jugadores: w.squad } } : null)).catch(() => null) : undefined,
     top_apostadores_polymarket: (() => {
       const agg = S.smart.byEvent.get(key(a.ev));
       return agg ? Object.fromEntries(Object.entries(agg).map(([side, s]) => [side, { cuantos: s.traders.length, usd: Math.round(s.usd), quienes: s.traders.map((t) => `${t.name} a ${t.price}`) }])) : null;
@@ -438,7 +439,7 @@ function labelTables(root) {
 function serverBanner() {
   if (!S.cfg.local || !S.version) return '';
   const sv = S.cfg.serverVersion;
-  if (sv && cmpVer(sv, '2.0.0') >= 0) return '';
+  if (sv && cmpVer(sv, '2.1.0') >= 0) return '';
   return `<div class="warn" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="grow"><b>El servidor sigue con la versión anterior.</b> Algunas funciones (como Top Polymarket) no van a funcionar hasta reiniciarlo.</div><button class="btn small primary" data-restartserver>↻ Reiniciar servidor</button></div>`;
 }
 
@@ -1622,7 +1623,60 @@ function tabCharts(a, sum) {
     <div class="widget mt chart-card"><h3>Probabilidad de ganar ${wp.length > 2 ? '· jugada por jugada (ESPN)' : '· estimación del bot'}</h3>${liveChart}</div>
     <div class="widget mt chart-card"><h3><img class="src-ic" src="https://polymarket.com/icons/favicon-32x32.png" alt=""> Precio en Polymarket · historial</h3>${pmChart}
       <div class="note">Precio = probabilidad que paga el mercado con dinero real. Si sube antes del partido, entró dinero de ese lado.</div></div>
-    <div class="widget mt chart-card"><h3>Comparativa del partido</h3>${stats}</div>`;
+    <div class="widget mt chart-card"><h3>Comparativa del partido</h3>${stats}</div>
+    ${advancedBlock(a)}`;
+}
+
+// ---------- Datos avanzados y fuentes externas ----------
+// Transfermarkt (valor de plantilla) se lee automáticamente porque lo permite; SofaScore, FBref, FotMob y Understat
+// no permiten lectura automática, así que se abren con un botón (en tu navegador, como cualquier visita).
+S.tm = new Map();
+async function loadTm(a) {
+  const k = key(a.ev);
+  if (S.tm.has(k)) return;
+  S.tm.set(k, { busy: true });
+  const [h, w] = await Promise.all([D.squadValue(a.ev.home.name), D.squadValue(a.ev.away.name)]);
+  S.tm.set(k, { home: h, away: w });
+  if (S.open === k && S.sheetTab === 'charts') renderSheet();
+}
+const UNDERSTAT = { 'eng.1': 'EPL', 'esp.1': 'La_liga', 'ita.1': 'Serie_A', 'fra.1': 'Ligue_1' };
+function sourceLinks(a) {
+  const ev = a.ev, q = `${ev.home.name} ${ev.away.name}`;
+  // "\" en DuckDuckGo abre directo el primer resultado de ese sitio (la página del partido o del equipo).
+  const go = (site, query = q) => `https://duckduckgo.com/?q=${encodeURIComponent('\\site:' + site + ' ' + query)}`;
+  const L = [];
+  if (ev.sport === 'soccer') {
+    L.push(['SofaScore', go('sofascore.com'), 'Momentum, mapa de calor y calificaciones']);
+    L.push(['FotMob', go('fotmob.com'), 'xG, tiros y alineaciones con calificación']);
+    L.push(['FBref', `https://fbref.com/search/search.fcgi?search=${encodeURIComponent(ev.home.name)}`, 'Estadísticas avanzadas de temporada']);
+    if (UNDERSTAT[ev.leagueId]) L.push(['Understat', `https://understat.com/league/${UNDERSTAT[ev.leagueId]}`, 'xG y xGA de la liga']);
+    L.push(['Transfermarkt', `https://www.transfermarkt.es/schnellsuche/ergebnis/schnellsuche?query=${encodeURIComponent(ev.home.name)}`, 'Plantilla, lesiones y valores']);
+    L.push(['BDFA', go('bdfa.com.ar', ev.home.name), 'Base de datos histórica']);
+    L.push(['dataref', 'https://dataref.net/', 'Argentinos en el mundo']);
+  } else if (ev.sport === 'esports') {
+    const wiki = { cs2: 'counterstrike', valorant: 'valorant', lol: 'leagueoflegends' }[ev.game] || 'counterstrike';
+    L.push(['Liquipedia', `https://liquipedia.net/${wiki}/index.php?search=${encodeURIComponent(ev.home.name)}`, 'Torneo, plantillas y resultados']);
+    if (ev.game === 'valorant') L.push(['vlr.gg', `https://www.vlr.gg/search/?q=${encodeURIComponent(ev.home.name)}`, 'Mapas, rondas y estadísticas']);
+    if (ev.game !== 'lol') L.push(['bo3.gg', go('bo3.gg'), 'Mapas y estadísticas']);
+  } else {
+    L.push(['SofaScore', go('sofascore.com'), 'Estadísticas y momentum']);
+  }
+  return `<div class="src-links">${L.map(([n, u, d]) => `<a class="src-link" href="${esc(u)}" target="_blank" rel="noopener"><b>${esc(n)} ↗</b><span class="note">${esc(d)}</span></a>`).join('')}</div>`;
+}
+function advancedBlock(a) {
+  const ev = a.ev, k = key(ev);
+  let tm = '';
+  if (ev.sport === 'soccer') {
+    const t = S.tm.get(k);
+    if (!t) loadTm(a);
+    if (!t || t.busy) tm = '<div class="shimmer"></div>';
+    else if (t.home?.value && t.away?.value) {
+      const tot = t.home.value + t.away.value, fmt = (v) => (v >= 1e6 ? '€' + (v / 1e6).toFixed(1) + ' M' : '€' + Math.round(v / 1e3) + ' mil');
+      tm = `<div class="statrow"><div class="lbl">Valor de la plantilla (Transfermarkt)</div><div class="v">${fmt(t.home.value)}</div><div class="bars"><span style="flex:${t.home.value / tot};background:var(--blue)"></span><span style="flex:${t.away.value / tot};background:var(--orange-fill)"></span></div><div class="v">${fmt(t.away.value)}</div></div>
+        <div class="note">${esc(ev.home.name)}: ${t.home.squad || '—'} jugadores · ${esc(ev.away.name)}: ${t.away.squad || '—'} jugadores. La plantilla más valiosa ${t.home.value > t.away.value ? 'es la de ' + esc(ev.home.name) : 'es la de ' + esc(ev.away.name)} (${(Math.max(t.home.value, t.away.value) / Math.min(t.home.value, t.away.value)).toFixed(1)} veces).</div>`;
+    } else tm = '<div class="note">Transfermarkt no encontró el valor de alguno de los equipos.</div>';
+  }
+  return `<div class="widget mt chart-card"><h3>Datos avanzados</h3>${tm}${sourceLinks(a)}</div>`;
 }
 
 function tabStats(a, sum) {

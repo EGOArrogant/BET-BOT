@@ -98,7 +98,10 @@ async function liquipediaEvents(league) {
     });
   }
   const events = [...out.values()];
-  try { await applyBo3(league.game, events); } catch (e) { console.warn('bo3.gg', e); }
+  // Valorant: primero vlr.gg (rondas en vivo); lo que no encuentre, bo3.gg. CS2: bo3.gg.
+  let done = [];
+  if (league.game === 'valorant') { try { done = await applyVlr(events); } catch (e) { console.warn('vlr.gg', e); } }
+  try { await applyBo3(league.game, events.filter((e) => !done.includes(e.id))); } catch (e) { console.warn('bo3.gg', e); }
   return events;
 }
 
@@ -127,6 +130,66 @@ const sameTeam = (a, b) => {
   return !!x && !!y && (x === y || (Math.min(x.length, y.length) >= 3 && (x.includes(y) || y.includes(x))));
 };
 const mapName = (m) => { const n = String(m || '').replace(/^de_/, ''); return n ? n[0].toUpperCase() + n.slice(1) : ''; };
+
+// ---------- Valorant en vivo desde vlr.gg (rondas del mapa en juego) ----------
+// vlr.gg permite leer sus páginas de partidos. Lista cada ~10 s y la página del partido en vivo cada ~6 s.
+const VLR = 'https://www.vlr.gg';
+async function vlrHtml(path, ttl) {
+  return cached('vlr:' + path, ttl, async () => {
+    const res = await fetch('/api/proxy?url=' + encodeURIComponent(VLR + path));
+    if (!res.ok) throw new Error('vlr.gg HTTP ' + res.status);
+    return new DOMParser().parseFromString(await res.text(), 'text/html');
+  });
+}
+function vlrItems(doc) {
+  return [...doc.querySelectorAll('a.match-item')].map((a) => {
+    const teams = [...a.querySelectorAll('.match-item-vs-team')].map((t) => ({
+      name: t.querySelector('.text-of')?.textContent.trim() || '', score: Number(t.querySelector('.match-item-vs-team-score')?.textContent.trim()) || 0,
+      win: t.classList.contains('mod-winner'),
+    }));
+    const status = a.querySelector('.ml-status')?.textContent.trim() || '';
+    return { href: a.getAttribute('href'), teams, live: /live/i.test(status), done: !!a.querySelector('.ml.mod-completed') && /ago|hace/i.test(a.querySelector('.ml-eta')?.textContent || status) };
+  }).filter((m) => m.teams.length === 2 && !/tbd/i.test(m.teams[0].name + m.teams[1].name));
+}
+function vlrMaps(doc, swap) {
+  return [...doc.querySelectorAll('.vm-stats-game')].filter((g) => g.dataset.gameId !== 'all').map((g, i) => {
+    const sc = [...g.querySelectorAll('.vm-stats-game-header .score')].map((s) => ({ v: Number(s.textContent.trim()) || 0, win: s.classList.contains('mod-win') }));
+    const name = g.querySelector('.map-name span')?.firstChild?.textContent.trim() || g.querySelector('.map')?.textContent.trim().split(/\s+/)[0] || '';
+    if (sc.length < 2) return null;
+    const [l, r] = swap ? [sc[1], sc[0]] : sc;
+    const done = l.win || r.win;
+    return { n: i + 1, map: name, status: done ? 'done' : l.v + r.v > 0 ? 'live' : 'next', home: l.v, away: r.v, winner: done ? (l.win ? 'home' : 'away') : null };
+  }).filter(Boolean);
+}
+export async function applyVlr(events) {
+  const live = events.filter((e) => e.state !== 'post' && new Date(e.date).getTime() < Date.now() + 15 * 60_000);
+  if (!live.length) return [];
+  const [up, res] = await Promise.all([vlrHtml('/matches', 10_000), vlrHtml('/matches/results', 60_000)]);
+  const items = [...vlrItems(up), ...vlrItems(res).map((m) => ({ ...m, done: true }))];
+  const handled = [];
+  for (const ev of live) {
+    let swap = false;
+    const m = items.find((x) => {
+      if (sameTeam(ev.home.name, x.teams[0].name) && sameTeam(ev.away.name, x.teams[1].name)) { swap = false; return true; }
+      if (sameTeam(ev.home.name, x.teams[1].name) && sameTeam(ev.away.name, x.teams[0].name)) { swap = true; return true; }
+      return false;
+    });
+    if (!m || (!m.live && !m.done)) continue;
+    const [h, a] = swap ? [m.teams[1], m.teams[0]] : m.teams;
+    ev.home.score = h.score; ev.away.score = a.score; ev.liveSource = 'vlr.gg';
+    if (m.live) {
+      try { ev.maps = vlrMaps(await vlrHtml(m.href, 6_000), swap); } catch {}
+      const cur = (ev.maps || []).find((x) => x.status === 'live');
+      ev.state = 'in';
+      ev.detail = `En vivo · ${h.score}-${a.score}${cur ? ` · Mapa ${cur.n}${cur.map ? ' (' + cur.map + ')' : ''} ${cur.home}-${cur.away}` : ''}`;
+    } else {
+      ev.state = 'post'; ev.completed = true; ev.detail = 'Final';
+      ev.home.winner = h.win || h.score > a.score; ev.away.winner = a.win || a.score > h.score;
+    }
+    handled.push(ev.id);
+  }
+  return handled;
+}
 
 export async function applyBo3(game, events) {
   const live = events.filter((e) => e.state !== 'post' && new Date(e.date).getTime() < Date.now() + 15 * 60_000);

@@ -1,8 +1,11 @@
 {
-  "version": "2.0.0",
+  "version": "2.1.0",
   "date": "2026-10-18",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Valorant en vivo desde vlr.gg: marcador de la serie y rondas del mapa en juego (bo3.gg queda de respaldo)",
+    "Fútbol: valor de la plantilla de cada equipo (Transfermarkt) comparado en Gráficas → Datos avanzados; la IA también lo recibe",
+    "Botones directos a SofaScore, FotMob, FBref, Understat, Transfermarkt, BDFA y dataref en cada partido; Liquipedia, vlr.gg y bo3.gg en eSports",
     "Liquidación automática más segura: si el partido cambia de id o la fuente lo quita, se encuentra por equipos y fecha; CS2 y Valorant se liquidan con el resultado de bo3.gg",
     "Nuevo estado \"Terminado · liquidando\" y anulación automática (con devolución) si no hay resultado oficial en 3 días; el boleto se limpia solo",
     "Base de datos de apuestas en tu PC (data/apuestas.jsonl): cada apuesta liquidada con momio, probabilidades, mercado, sharps y resultado",

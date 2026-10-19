@@ -633,3 +633,6 @@ html.is-offline #view { filter: grayscale(.6); opacity: .7; transition: filter .
 .bc-ended .bet-state { background: var(--fill-2); color: var(--text); }
 .lg-onlight { background: #fff; border-radius: 6px; padding: 2px; box-sizing: border-box; }
 .chart-card h3 { justify-content: flex-start; }
+.src-links { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; margin-top: 10px; }
+.src-link { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 14px; background: var(--fill-2); color: var(--text); text-decoration: none; }
+.src-link:hover { background: color-mix(in srgb, var(--blue) 18%, var(--fill-2)); }
