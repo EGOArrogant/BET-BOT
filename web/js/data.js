@@ -64,6 +64,12 @@ export const leagueById = (id) => LEAGUES.find((l) => l.id === id);
 export const LEAGUE_LOGO = {
   lmb: 'https://www.mlbstatic.com/team-logos/league-on-dark/125.svg',
   lol: 'https://static.lolesports.com/leagues/1592594612171_WorldsDarkBG.png',
+  // Logos oficiales (Wikimedia Commons) de ligas sin logo en ESPN.
+  atp: 'https://upload.wikimedia.org/wikipedia/commons/3/3f/ATP_Tour_logo.svg',
+  wta: 'https://upload.wikimedia.org/wikipedia/en/0/0e/WTA_Tour_logo.png',
+  cs2: 'https://upload.wikimedia.org/wikipedia/commons/b/b8/Counter-Strike_2_logo.svg',
+  valorant: 'https://upload.wikimedia.org/wikipedia/commons/f/fc/Valorant_logo_-_pink_color_version.svg',
+  boxing: 'https://upload.wikimedia.org/wikipedia/en/e/e3/World_Boxing_Council_full_logo.png',
 };
 export const leagueLogo = (id) => LEAGUE_LOGO[id] || '';
 
@@ -463,6 +469,12 @@ export async function getSummary(league, eventId) {
       list: (t.injuries || []).map((i) => ({ name: i.athlete?.displayName, status: i.status, detail: i.details?.type || i.type?.description || '' })),
     })),
     winProb: wp ? { home: wp.homeWinPercentage, tie: wp.tiePercentage || 0 } : null,
+    // Probabilidad de ganar jugada por jugada (ESPN), para la gráfica del partido (máx. 240 puntos).
+    wpSeries: (() => {
+      const w = data.winprobability || [];
+      const step = Math.max(1, Math.ceil(w.length / 240));
+      return w.filter((_, i) => i % step === 0 || i === w.length - 1).map((x) => ({ home: x.homeWinPercentage, tie: x.tiePercentage || 0 }));
+    })(),
     lastFive: (data.lastFiveGames || []).map((t) => ({
       team: t.team?.displayName, teamId: String(t.team?.id),
       games: (t.events || []).map((g) => ({ result: g.gameResult, score: g.score, opp: g.opponent?.displayName, date: g.gameDate })),

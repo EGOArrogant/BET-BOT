@@ -53,13 +53,13 @@ async function polymarket(league, { includeResolved = false } = {}) {
       const names = parseArr(ml[0].outcomes), prices = parseArr(ml[0].outcomePrices).map(Number);
       const ask = num(ml[0].bestAsk), bid = num(ml[0].bestBid);
       // cond = mercado y resultado exactos: sirven para consultar quiénes apuestan en cada lado.
-      names.forEach((n, i) => outcomes.push({ name: n, prob: prices[i], ask: i === 0 ? ask : bid != null ? 1 - bid : null, cond: { conditionId: ml[0].conditionId, outcomeIndex: i } }));
+      names.forEach((n, i) => outcomes.push({ name: n, prob: prices[i], ask: i === 0 ? ask : bid != null ? 1 - bid : null, cond: { conditionId: ml[0].conditionId, outcomeIndex: i, token: parseArr(ml[0].clobTokenIds)[i] || null } }));
     } else {
       // Fútbol: un mercado Sí/No por resultado ("¿Gana X?", "¿Empate?")
       for (const m of ml) {
         const prices = parseArr(m.outcomePrices).map(Number);
         const label = m.groupItemTitle || m.question || '';
-        outcomes.push({ name: label, prob: prices[0], ask: num(m.bestAsk), draw: /draw|empate|tie/i.test(label), cond: { conditionId: m.conditionId, outcomeIndex: 0 } });
+        outcomes.push({ name: label, prob: prices[0], ask: num(m.bestAsk), draw: /draw|empate|tie/i.test(label), cond: { conditionId: m.conditionId, outcomeIndex: 0, token: parseArr(m.clobTokenIds)[0] || null } });
       }
     }
     const liq = Number(e.liquidity || ml.reduce((a, m) => a + Number(m.liquidity || 0), 0)) || 0;
@@ -228,4 +228,17 @@ export function matchPrediction(ev, markets) {
   if (!found.length) return null;
   const avg = (k) => { const v = found.map((f) => f[k]).filter((x) => x != null); return v.length ? v.reduce((p, c) => p + c, 0) / v.length : null; };
   return { home: avg('home'), away: avg('away'), draw: avg('draw'), sources: found };
+}
+
+// Historial de precio de un resultado en Polymarket (probabilidad que paga el mercado a lo largo del tiempo).
+const histCache = new Map();
+export async function priceHistory(token) {
+  if (!token) return [];
+  const hit = histCache.get(token);
+  if (hit && Date.now() - hit.t < 60_000) return hit.v;
+  const res = await fetch(`https://clob.polymarket.com/prices-history?market=${token}&interval=max&fidelity=30`);
+  if (!res.ok) throw new Error('Polymarket historial HTTP ' + res.status);
+  const v = ((await res.json()).history || []).map((x) => ({ t: x.t * 1000, p: Number(x.p) }));
+  histCache.set(token, { t: Date.now(), v });
+  return v;
 }

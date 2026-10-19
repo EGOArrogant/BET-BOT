@@ -169,6 +169,28 @@ export async function applyBo3(game, events) {
   }
 }
 
+// Resultados terminados de CS2/Valorant desde una fecha (para liquidar apuestas cuyo partido
+// Liquipedia ya quitó de su lista). Devuelve eventos con el mismo formato que el resto.
+export async function finishedEsports(game, sinceIso) {
+  const d = BO3_DISC[game];
+  if (!d) return [];
+  const since = new Date(Math.floor((new Date(sinceIso).getTime() - 12 * 3600_000) / 3600_000) * 3600_000).toISOString();
+  return cached('bo3fin:' + game + since, 60_000, async () => {
+    const url = `${BO3}?filter[matches.discipline_id][eq]=${d}&filter[matches.status][in]=finished&filter[matches.start_date][gte]=${since}&page[limit]=100&with=teams&sort=-start_date`;
+    const res = await fetch('/api/proxy?url=' + encodeURIComponent(url));
+    if (!res.ok) throw new Error('bo3.gg HTTP ' + res.status);
+    const rows = JSON.parse(await res.text()).results || [];
+    return rows.filter((m) => m.team1 && m.team2).map((m) => {
+      const side = (t, sc, id) => ({ id: teamId(game, t.name), name: t.name, abbr: t.name, logo: t.image_url || '', score: sc ?? 0, winner: m.winner_team_id === id, record: '', form: '', linescores: [] });
+      return {
+        id: `bo3-${m.id}`, leagueId: game, sport: 'esports', game, name: `${m.team1.name} vs ${m.team2.name}`, date: m.start_date,
+        state: 'post', completed: true, detail: 'Final', home: side(m.team1, m.team1_score, m.team1_id), away: side(m.team2, m.team2_score, m.team2_id),
+        odds: null, bestOf: m.bo_type || 3,
+      };
+    });
+  });
+}
+
 export async function getEsportsEvents(league) {
   return league.source === 'lolesports' ? lolEvents(league) : liquipediaEvents(league);
 }

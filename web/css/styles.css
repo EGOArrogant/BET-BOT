@@ -586,3 +586,50 @@ html.is-offline #view { filter: grayscale(.6); opacity: .7; transition: filter .
   background: var(--fill-2); color: var(--text); }
 .ts-step.done .ts-n { background: var(--green-fill); color: #fff; }
 .ts-step.done > .grow { opacity: .7; }
+
+/* ---------- v2.0: tiempo real, categorías, marcas y gráficas ---------- */
+.live-center .feed .it { border-radius: 10px; transition: background .6s; }
+.live-center .feed .it.fresh { background: color-mix(in srgb, var(--blue) 14%, transparent); animation: lcIn .5s ease-out; }
+@keyframes lcIn { from { transform: translateY(-6px); opacity: 0; } }
+.lc-won div:last-child { color: var(--green); } .lc-lost div:last-child { color: var(--red); }
+.lc-sharp div:last-child { color: var(--purple, #af52de); } .lc-gold div:last-child { color: var(--gold, #ffd60a); }
+.live-cat { margin-bottom: 14px; }
+.live-cat-head { font-weight: 700; font-size: 15px; margin: 4px 2px 8px; display: flex; gap: 8px; align-items: center; }
+.live-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+@media (max-width: 760px) { .live-grid { grid-template-columns: 1fr; } }
+.lg-logo { width: 22px; height: 22px; object-fit: contain; vertical-align: middle; flex: none; }
+.lg-emoji { display: inline-grid; place-items: center; font-size: 16px; }
+.sheet-league { display: flex; align-items: center; gap: 6px; }
+.team-line .sc.bump { animation: bump 1.2s ease-out; border-radius: 6px; }
+@keyframes bump { 0% { background: var(--green-fill, #30d158); color: #000; transform: scale(1.25); } 100% { background: transparent; transform: none; } }
+.tag.pm-tag { display: inline-flex; align-items: center; gap: 5px; background: color-mix(in srgb, #2e5cff 18%, transparent); color: var(--text); }
+.tag.pm-tag b { font-variant-numeric: tabular-nums; }
+.tag-ic { width: 13px; height: 13px; border-radius: 3px; }
+.k-ic { display: inline-grid; place-items: center; background: #00d18c; color: #000; font-size: 9px; }
+.tag.bot-tag { background: transparent; border: 1px dashed color-mix(in srgb, var(--text) 45%, transparent); color: var(--text-2, var(--text)); }
+.bot-concl { background: transparent !important; border: 1.5px dashed color-mix(in srgb, var(--text) 35%, transparent); }
+.bot-concl-head { font-weight: 700; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.bot-concl-pick { font-size: 18px; margin-bottom: 4px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tag.conf-alta { background: color-mix(in srgb, var(--green) 22%, transparent); color: var(--green); }
+.tag.conf-media { background: color-mix(in srgb, var(--orange-fill) 22%, transparent); color: var(--orange-fill); }
+.tag.conf-baja { background: var(--fill); }
+.chart-card { background: var(--fill); }
+.chart-card h3 { display: flex; align-items: center; gap: 6px; }
+.src-ic { width: 16px; height: 16px; border-radius: 4px; }
+.lc-chart { position: relative; }
+.lc-chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.lc-chart .cg { stroke: color-mix(in srgb, var(--text) 10%, transparent); stroke-width: 1; }
+.lc-chart .cg.mid { stroke: color-mix(in srgb, var(--text) 22%, transparent); }
+.lc-chart .cy, .lc-chart .cx, .lc-chart .cref { fill: var(--text-3, #8e8e93); font-size: 11px; font-family: inherit; }
+.lc-chart .cy { text-anchor: end; }
+.lc-chart .cross { stroke: color-mix(in srgb, var(--text) 45%, transparent); stroke-width: 1; }
+.chart-tip { position: absolute; top: 6px; min-width: 150px; padding: 8px 10px; border-radius: 12px; font-size: 12px; pointer-events: none;
+  background: var(--glass, rgba(30,30,40,.92)); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); box-shadow: 0 8px 24px rgba(0,0,0,.3); }
+.chart-tip i, .chart-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.chart-legend { margin-bottom: 6px; flex-wrap: wrap; }
+.chart-empty { padding: 26px 8px; text-align: center; }
+.kv { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--sep, rgba(255,255,255,.08)); }
+.bc-ended { border-color: var(--text-3, #8e8e93); border-style: dashed; }
+.bc-ended .bet-state { background: var(--fill-2); color: var(--text); }
+.lg-onlight { background: #fff; border-radius: 6px; padding: 2px; box-sizing: border-box; }
+.chart-card h3 { justify-content: flex-start; }

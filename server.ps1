@@ -8,7 +8,7 @@
 param([int]$Port = 8787)
 
 # Versión del servidor: la app la compara con la de la página para avisar si hace falta reiniciarlo.
-$SERVER_VERSION = '1.9.1'
+$SERVER_VERSION = '2.0.0'
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -17,6 +17,14 @@ $webDir = Join-Path $root 'web'
 $dataDir = Join-Path $root 'data'
 $statePath = Join-Path $dataDir 'state.json'
 $revPath = Join-Path $dataDir 'state.rev'
+# Base de datos de apuestas liquidadas (una linea JSON por apuesta, nunca se borra): historial para aprender.
+$ledgerPath = Join-Path $dataDir 'apuestas.jsonl'
+$script:ledgerIds = New-Object 'System.Collections.Generic.HashSet[string]'
+if (Test-Path $ledgerPath) {
+  foreach ($line in [IO.File]::ReadAllLines($ledgerPath, [Text.Encoding]::UTF8)) {
+    if ($line -match '"id"\s*:\s*"([^"]+)"') { [void]$script:ledgerIds.Add($Matches[1]) }
+  }
+}
 $tokenPath = Join-Path $dataDir 'token.txt'
 $envPath = Join-Path $root '.env'
 if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir | Out-Null }
@@ -821,7 +829,22 @@ try {
         # Si cambió el servidor, se reinicia solo para usar el código nuevo (antes había que cerrar y abrir iniciar.bat).
         if ($serverChanged) { $script:restart = $true }
       }
-      elseif ($path -eq '/api/restart' -and $req.HttpMethod -eq 'POST') {
+      elseif ($path -eq '/api/ledger' -and $req.HttpMethod -eq 'POST') {
+        # Registra apuestas liquidadas (sin duplicados aunque las envien la PC y el celular).
+        # ForEach-Object desarma la lista (en PowerShell 5.1 ConvertFrom-Json entrega el arreglo como un solo objeto).
+        $items = @(($utf8.GetString((Read-Body $req)) | ConvertFrom-Json) | ForEach-Object { $_ })
+        $added = 0
+        foreach ($it in $items) {
+          if (-not $it.id -or $script:ledgerIds.Contains([string]$it.id)) { continue }
+          [IO.File]::AppendAllText($ledgerPath, (($it | ConvertTo-Json -Compress -Depth 6) + "`n"), $utf8)
+          [void]$script:ledgerIds.Add([string]$it.id); $added++
+        }
+        Send-Text $ctx (@{ ok = $true; added = $added; total = $script:ledgerIds.Count } | ConvertTo-Json -Compress)
+      }
+      elseif ($path -eq '/api/ledger') {
+        $lines = if (Test-Path $ledgerPath) { @([IO.File]::ReadAllLines($ledgerPath, [Text.Encoding]::UTF8) | Where-Object { $_.Trim() }) } else { @() }
+        Send-Text $ctx ('[' + ($lines -join ',') + ']')
+      }      elseif ($path -eq '/api/restart' -and $req.HttpMethod -eq 'POST') {
         if (-not (Test-Local $req)) { Send-Text $ctx '{"error":"solo desde la PC"}' 'application/json' 403; continue }
         Send-Text $ctx '{"ok":true,"restarting":true}'
         $script:restart = $true

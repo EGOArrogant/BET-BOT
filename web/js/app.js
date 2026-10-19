@@ -4,9 +4,11 @@ import * as B from './bank.js';
 import { initAI, aiReady, analyzeWithAI, researchOdds } from './ai.js';
 import { STRATEGY_HTML } from './strategy.js';
 import * as K from './books.js';
-import { updateElo, esportsTable } from './esports.js';
-import { getPredictionMarkets, matchPrediction, nameScore } from './prediction.js';
+import { updateElo, esportsTable, finishedEsports } from './esports.js';
+import { getPredictionMarkets, matchPrediction, nameScore, priceHistory } from './prediction.js';
 import * as SM from './smart.js';
+import { morph } from './morph.js';
+import { lineChart } from './charts.js';
 import { initShell, saveSnapshot, pushSupport, pushState, enablePush, disablePush, testPush, setPushPrefs, pushOnHere, isTailscale } from './appshell.js';
 
 // ---------- utilidades ----------
@@ -54,7 +56,11 @@ const S = {
   oddsResearch: new Map(), notifs: [], newsNotifs: [], newsCheckedAt: 0, goldFirstSeen: new Map(),
   version: null, update: null, pendingRender: false,
 };
-const allAnalyses = () => [...S.analysis.values()];
+// Orden fijo (liga por importancia → hora → id): las listas no "brincan" cuando una liga termina de actualizarse.
+const LG_ORDER = new Map(D.LEAGUES.map((l, i) => [l.id, i]));
+const cmpEv = (x, y) => (LG_ORDER.get(x.ev.leagueId) ?? 99) - (LG_ORDER.get(y.ev.leagueId) ?? 99)
+  || new Date(x.ev.date) - new Date(y.ev.date) || String(x.ev.id).localeCompare(String(y.ev.id));
+const allAnalyses = () => [...S.analysis.values()].sort(cmpEv);
 const allEvents = () => [...S.events.values()].flat();
 
 function analyze(ev, table, winProb) {
@@ -69,6 +75,7 @@ function analyze(ev, table, winProb) {
   if (ev.state === 'pre' && model.tradable) for (const s of sels) if (s.value) B.recordShadow(ev, s);
   const a = { ev, model, sels, golden };
   S.analysis.set(key(ev), a);
+  recordProb(a);
   return a;
 }
 
@@ -104,12 +111,15 @@ async function refreshAll() {
   B.settleShadow(events);
   B.learnFromEvents(events);
   await settleOld();
+  B.cleanSlip(events);
+  backfillLedger().catch(() => {});
   // El piloto automático y la práctica diaria corren solo en un dispositivo (evita apuestas duplicadas).
   await autopilot();
   try { await loadRelevantNews(); } catch {}
   refreshSmart().then(() => { mapSmartToEvents(); scanEventSmart(); }); // top apostadores de Polymarket + dinero inteligente por partido (segundo plano)
   mapSmartToEvents();
   collectNotifications();
+  detectChanges();
   S.lastUpdate = Date.now();
   S.scanning = false;
   saveSnapshot({ bank: B.getState().bankroll, pending: B.pendingBets().length });
@@ -127,10 +137,47 @@ async function settleOld() {
   for (const b of pend) groups.set(b.leagueId + '|' + String(b.eventDate).slice(0, 10), b);
   for (const b of [...groups.values()].slice(0, 12)) {
     try {
-      const evs = await D.getEventsAround(D.leagueById(b.leagueId), b.eventDate);
+      let evs = await D.getEventsAround(D.leagueById(b.leagueId), b.eventDate);
+      // CS2/Valorant: Liquipedia quita los partidos terminados; el resultado se toma de bo3.gg.
+      const lg = D.leagueById(b.leagueId);
+      if (lg?.sport === 'esports' && lg.game !== 'lol') evs = [...evs, ...await finishedEsports(lg.game, b.eventDate).catch(() => [])];
       B.settleWithEvents(evs); B.settleShadow(evs);
     } catch (e) { console.warn('liquidación', e); }
   }
+  // Sin resultado oficial 3 días después: se anula y se devuelve el monto (no se queda "en juego" para siempre).
+  B.voidStale(72);
+}
+
+// ---------- base de datos de apuestas (data/apuestas.jsonl en la PC) ----------
+// Cada apuesta liquidada se guarda con todo su contexto: probabilidades, momios, mercado, sharps y resultado.
+const ledgerQueue = [];
+B.onSettled((b, ev) => {
+  const smart = ev ? S.smart.events.get(ev.leagueId + ':' + ev.id) : null;
+  ledgerQueue.push({
+    id: b.id, t: b.settledAt, placedAt: b.placedAt, kind: b.source === 'manual' ? 'manual' : b.source,
+    sport: b.sport, leagueId: b.leagueId, event: b.eventName, eventDate: b.eventDate, live: !!b.live,
+    market: b.market, pick: b.pick, line: b.line, label: b.label,
+    odds: b.odds, oddsMx: b.oddsMx, refOdds: b.refOdds, closingOdds: b.closingOdds, book: b.book,
+    p: b.p, pModel: b.pModel, pMarket: b.pMarket, ev: b.ev, stake: b.stake, payout: b.payout,
+    status: b.status, finalScore: b.finalScore || null, settledBy: b.settledBy || 'auto',
+    sharpSide: smart?.best || null, profit: b.status === 'void' ? 0 : Math.round(((b.payout || 0) - b.stake) * 100) / 100,
+  });
+  pushFeed({ kind: b.status, k: ev ? ev.leagueId + ':' + ev.id : null, text: `${b.status === 'won' ? '✅ Ganaste' : b.status === 'lost' ? '❌ Perdiste' : '↩️ Anulada'}: ${b.label} · ${b.eventName}${b.finalScore ? ' · ' + b.finalScore : ''}${b.status === 'won' ? ` · +${money(b.payout - b.stake)}` : b.status === 'lost' ? ` · −${money(b.stake)}` : ''}` });
+  flushLedger();
+});
+async function flushLedger() {
+  if (!ledgerQueue.length) return;
+  const batch = ledgerQueue.splice(0);
+  try { const r = await fetch('/api/ledger', { method: 'POST', body: JSON.stringify(batch), headers: { 'Content-Type': 'application/json' } }); if (!r.ok) throw 0; S.ledger = null; }
+  catch { ledgerQueue.unshift(...batch); setTimeout(flushLedger, 30_000); }
+}
+// Registro inicial: las apuestas ya liquidadas antes de esta versión también entran a la base de datos (sin duplicados).
+async function backfillLedger() {
+  const done = B.getState().bets.filter((b) => !['pending'].includes(b.status));
+  if (!done.length || B.getState().settings.ledgerV1) return;
+  for (const b of done) ledgerQueue.push({ id: b.id, t: b.settledAt || b.placedAt, placedAt: b.placedAt, kind: b.source, sport: b.sport, leagueId: b.leagueId, event: b.eventName, eventDate: b.eventDate, market: b.market, pick: b.pick, line: b.line, label: b.label, odds: b.odds, oddsMx: b.oddsMx, refOdds: b.refOdds, closingOdds: b.closingOdds, p: b.p, pModel: b.pModel, pMarket: b.pMarket, ev: b.ev, stake: b.stake, payout: b.payout, status: b.status, finalScore: b.finalScore || null });
+  await flushLedger();
+  if (!ledgerQueue.length) B.updateSettings({ ledgerV1: true });
 }
 
 // ---------- pausa de la IA ante errores que no se arreglan reintentando ----------
@@ -391,7 +438,7 @@ function labelTables(root) {
 function serverBanner() {
   if (!S.cfg.local || !S.version) return '';
   const sv = S.cfg.serverVersion;
-  if (sv && cmpVer(sv, '1.9.1') >= 0) return '';
+  if (sv && cmpVer(sv, '2.0.0') >= 0) return '';
   return `<div class="warn" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="grow"><b>El servidor sigue con la versión anterior.</b> Algunas funciones (como Top Polymarket) no van a funcionar hasta reiniciarlo.</div><button class="btn small primary" data-restartserver>↻ Reiniciar servidor</button></div>`;
 }
 
@@ -404,12 +451,20 @@ function render() {
   S.pendingRender = false;
   const v = $('#view');
   const views = { home: viewHome, soccer: () => viewSection('soccer'), sports: () => viewSection('sports'), esports: () => viewSection('esports'), combat: viewCombat, smart: viewSmart, bet: viewBet, gold: viewGold, bank: viewBank, news: viewNews, more: viewMore };
-  v.innerHTML = serverBanner() + views[S.tab]();
+  // Misma sección: solo se cambia lo que es distinto (sin parpadeos). Sección nueva: se pinta completa.
+  const viewKey = S.tab + '|' + (S.moreTab || '') + '|' + (S.bankTab || '');
+  const html = serverBanner() + views[S.tab]();
+  const fresh = S.viewKey !== viewKey;
+  if (fresh) { v.innerHTML = html; S.viewKey = viewKey; } else morph(v, html);
   labelTables(v);
   if (S.tab === 'home' || S.tab === 'bank') drawEquity();
-  if (S.tab === 'news') loadNews();
-  if (S.tab === 'more' && S.moreTab === 'tables') loadTables();
-  if (S.tab === 'more' && S.moreTab === 'phone') loadPhone();
+  // Lo que se carga aparte solo se pide al entrar a la sección (después, el contenido se conserva).
+  if (fresh || S.reloadView) {
+    S.reloadView = false;
+    if (S.tab === 'news') loadNews();
+    if (S.tab === 'more' && S.moreTab === 'tables') loadTables();
+    if (S.tab === 'more' && S.moreTab === 'phone') loadPhone();
+  }
 }
 
 // ---------- Inicio ----------
@@ -468,8 +523,9 @@ function viewHome() {
     <div class="widget glass"><h3>Evolución del capital <span class="note" style="text-transform:none;letter-spacing:0">Inicial ${money(st.startBankroll)}</span></h3><div class="chart" id="equity"></div></div>
     ${botWidget()}
   </div>
-  <div class="section-title">En vivo ahora <small>${live.length} partidos</small></div>
-  ${live.length ? `<div class="league-block glass">${live.slice(0, 8).map(compactMatch).join('')}</div>` : `<div class="widget glass empty">No hay partidos en vivo en este momento.</div>`}
+  ${liveCenter()}
+  <div class="section-title">En vivo ahora <small>${live.length} partidos · se actualiza solo cada 5 s</small></div>
+  ${live.length ? liveByCategory(live) : `<div class="widget glass empty">No hay partidos en vivo en este momento.</div>`}
   <div class="section-title">Oportunidades de Oro <small><a href="#" data-tab-link="gold">Ver todas</a></small></div>
   ${golds.length ? `<div class="grid opps">${golds.map(({ g, a }) => oppCard(g, a)).join('')}</div>` : `<div class="widget glass empty">Sin oportunidades de oro por ahora. El bot sigue buscando.</div>`}
   <div class="section-title">Valor detectado <small>EV positivo con momio de referencia</small></div>
@@ -478,6 +534,73 @@ function viewHome() {
     <div class="widget glass"><h3>Mis apuestas en juego <span class="flex" style="text-transform:none;letter-spacing:0;gap:6px"><button class="btn small" data-banktab="won">✅ ${st.bets.filter((b) => b.status === 'won').length}</button><button class="btn small" data-banktab="lost">❌ ${st.bets.filter((b) => b.status === 'lost').length}</button><button class="btn small" data-banktab="all">Ver todas</button></span></h3>${pend.length ? betsTable(pend, true) : '<div class="empty">Sin apuestas en juego</div>'}</div>
     <div class="widget glass"><h3>Actividad del bot</h3>${logList(10)}</div>
   </div>`;
+}
+
+// ---------- Centro en tiempo real (dentro del dashboard, sin alarmas) ----------
+// Compara cada actualización con la anterior y anota lo importante: goles/puntos en tus partidos o en
+// partidos con señal, inicio y final de tus partidos, nuevas señales sharp, oportunidades de oro y liquidaciones.
+S.feed = (() => { try { return JSON.parse(localStorage.getItem('bb-feed') || '[]').filter((x) => Date.now() - x.t < 12 * 3600_000); } catch { return []; } })();
+S.snap = null; S.bump = new Map(); S.startedAt = Date.now();
+S.sharpSeen = (() => { try { return new Map(JSON.parse(localStorage.getItem('bb-sharpseen') || '[]')); } catch { return new Map(); } })();
+window.addEventListener('pagehide', () => { try { localStorage.setItem('bb-sharpseen', JSON.stringify([...S.sharpSeen].slice(-400))); } catch {} });
+function pushFeed(item) {
+  const it = { t: Date.now(), ...item };
+  if (S.feed.some((x) => x.text === it.text && Date.now() - x.t < 10 * 60_000)) return;
+  S.feed.unshift(it);
+  S.feed = S.feed.slice(0, 60);
+  try { localStorage.setItem('bb-feed', JSON.stringify(S.feed)); } catch {}
+}
+function detectChanges() {
+  const now = new Map();
+  for (const a of allAnalyses()) {
+    const ev = a.ev, k = key(ev), r = S.smart.events.get(k);
+    now.set(k, { state: ev.state, hs: ev.home.score, as: ev.away.score, sharp: r?.best || null, gold: a.golden.length, ev, a, r });
+  }
+  if (S.snap) {
+    for (const [k, n] of now) {
+      const o = S.snap.get(k);
+      if (!o) continue;
+      const ev = n.ev, mine = B.hasBetOn(ev.id), flagged = mine || n.sharp || n.gold;
+      const score = `${ev.home.name} ${ev.home.score ?? 0}-${ev.away.score ?? 0} ${ev.away.name}`;
+      if (o.state === 'pre' && n.state === 'in' && flagged) pushFeed({ kind: 'start', k, text: `▶️ Empezó ${ev.name}${mine ? ' · tienes apuesta' : ''}` });
+      if (n.state !== 'pre' && (o.hs !== n.hs || o.as !== n.as) && o.state !== 'pre') {
+        S.bump.set(k, Date.now());
+        if (flagged) pushFeed({ kind: 'score', k, text: `${ev.sport === 'soccer' ? '⚽ Gol' : D.SPORT_ICON[ev.sport] + ' Marcador'}: ${score}${mine ? ' · tu apuesta' : ''}` });
+      }
+      if (o.state === 'in' && n.state === 'post' && flagged) pushFeed({ kind: 'end', k, text: `🏁 Terminó: ${score}` });
+      // Señal sharp: se anuncia una vez por partido y lado (no cada vez que se vuelve a escanear).
+      // Las que ya existían al abrir la app se registran sin aviso (no es algo "nuevo").
+      if (n.sharp && ev.state !== 'post' && S.sharpSeen.get(k) !== n.sharp) {
+        const first = !S.sharpSeen.has(k) && Date.now() - S.startedAt < 3 * 60_000;
+        S.sharpSeen.set(k, n.sharp);
+        const s = n.r.sides[n.sharp];
+        if (!first) pushFeed({ kind: 'sharp', k, text: `🧠 Sharps cargados en ${n.sharp === 'draw' ? 'Empate' : ev[n.sharp].name} (${s.sharpN} sharp · ${money0(s.sharpValue)}) · ${ev.name}` });
+      }
+      if (n.gold > o.gold && ev.state !== 'post') { const g = n.a.golden[0]; pushFeed({ kind: 'gold', k, text: `★ ${g?.title || 'Oportunidad de oro'} · ${ev.name}` }); }
+    }
+  }
+  S.snap = now;
+}
+
+function liveCenter() {
+  const items = S.feed.slice(0, 8);
+  const ago = (t) => { const s = Math.round((Date.now() - t) / 1000); return s < 60 ? `hace ${s} s` : s < 3600 ? `hace ${Math.round(s / 60)} min` : new Date(t).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }); };
+  return `<div class="widget glass live-center mt" data-key="live-center"><h3>⚡ En tiempo real <span class="note" style="text-transform:none;letter-spacing:0">se actualiza solo · sin alarmas</span></h3>
+    ${items.length ? `<div class="feed">${items.map((x) => `<div class="it lc-${x.kind} ${Date.now() - x.t < 10_000 ? 'fresh' : ''}" data-key="feed-${x.t}-${x.kind}" ${x.k ? `data-open="${x.k}" style="cursor:pointer"` : ''}><div class="c">${ago(x.t)}</div><div>${esc(x.text)}</div></div>`).join('')}</div>`
+      : '<div class="note">Aquí aparecen al instante los goles y puntos de tus partidos, el inicio y final de tus apuestas, nuevas señales de sharps, oportunidades de oro y apuestas liquidadas.</div>'}</div>`;
+}
+
+// En vivo agrupado: categoría (Fútbol, Deportes, Combate, eSports) → liga con su logo → partidos en orden fijo.
+function liveByCategory(live) {
+  return Object.entries(D.SECTIONS).map(([sec, info]) => {
+    const items = live.filter((a) => info.sports.includes(a.ev.sport));
+    if (!items.length) return '';
+    const byLg = new Map();
+    for (const a of items) { if (!byLg.has(a.ev.leagueId)) byLg.set(a.ev.leagueId, []); byLg.get(a.ev.leagueId).push(a); }
+    return `<div class="live-cat" data-key="livecat-${sec}"><div class="live-cat-head">${D.SPORT_ICON[info.sports[0]]} ${esc(info.title)} <span class="note">${items.length} en vivo</span></div>
+      <div class="live-grid">${[...byLg].map(([id, arr]) => { const lg = D.leagueById(id);
+        return `<div class="league-block glass" data-key="live-${id}"><div class="league-head">${lgMark(lg, arr[0].ev)} ${esc(lg.name)}<span class="spacer"></span><span class="meta note">${arr.length}</span></div>${arr.map(compactMatch).join('')}</div>`; }).join('')}</div></div>`;
+  }).join('');
 }
 
 function valueRow(s, a) {
@@ -501,7 +624,24 @@ function teamLine(ev, side) {
   const t = ev[side];
   const showScore = ev.state !== 'pre';
   const sc = ev.sport === 'tennis' && showScore ? t.linescores.join(' ') : showScore ? t.score ?? '' : '';
-  return `<div class="team-line ${t.winner ? 'win' : ''}">${t.logo ? `<img src="${esc(t.logo)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<span class="nm">${esc(t.name)}${t.seed ? ` <span class="note">(${esc(t.seed)})</span>` : ''}${(ev.sport === 'mma' || ev.sport === 'boxing') && (t.record || t.flag) ? ` <span class="note">${esc([t.record, t.flag].filter(Boolean).join(' · '))}</span>` : ''}</span><span class="sc">${esc(sc)}</span></div>`;
+  const bump = S.bump.get(key(ev)) > Date.now() - 6000;
+  return `<div class="team-line ${t.winner ? 'win' : ''}">${t.logo ? `<img src="${esc(t.logo)}" alt="" loading="lazy" onerror="this.remove()">` : ''}<span class="nm">${esc(t.name)}${t.seed ? ` <span class="note">(${esc(t.seed)})</span>` : ''}${(ev.sport === 'mma' || ev.sport === 'boxing') && (t.record || t.flag) ? ` <span class="note">${esc([t.record, t.flag].filter(Boolean).join(' · '))}</span>` : ''}</span><span class="sc${bump ? ' bump' : ''}">${esc(sc)}</span></div>`;
+}
+
+// Marca de cada partido: precio en Polymarket (o Kalshi) con su logo; si no hay mercado, la conclusión del bot (distinta).
+const PM_ICON = 'https://polymarket.com/icons/favicon-32x32.png';
+function marketTag(a) {
+  const ev = a.ev, pm = ev.pm;
+  const ab = (s) => (s === 'draw' ? 'X' : ev[s].abbr || ev[s].name.split(' ').slice(-1)[0]);
+  if (pm?.sources?.length) {
+    const poly = pm.sources.find((s) => s.source === 'Polymarket'), src = poly || pm.sources[0];
+    const icon = poly ? `<img class="tag-ic" src="${PM_ICON}" alt="Polymarket">` : '<b class="tag-ic k-ic">K</b>';
+    const sides = ['home', 'draw', 'away'].filter((s) => pm[s] != null);
+    return `<span class="tag pm-tag" title="Probabilidad con dinero real en ${esc(src.source)}${pm.sources.length > 1 ? ' (promedio de ' + pm.sources.length + ' mercados)' : ''}">${icon} ${sides.map((s) => `<span>${esc(ab(s))} <b>${Math.round(pm[s] * 100)}%</b></span>`).join(' · ')}</span>`;
+  }
+  const c = botConclusion(a);
+  if (!c) return '';
+  return `<span class="tag bot-tag" title="Sin mercado de predicción: conclusión propia del bot (${c.conf.toLowerCase()} confianza)">🤖 ${esc(ab(c.pick))} <b>${Math.round(c.p * 100)}%</b></span>`;
 }
 
 function tagsFor(a) {
@@ -518,10 +658,10 @@ function tagsFor(a) {
     const vv = a.sels.filter((s) => s.value);
     if (vv.length && ev.state === 'pre') t.push(`<span class="tag value">Valor ${pct(Math.max(...vv.map((s) => s.ev)), 1)}</span>`);
     if (B.hasBetOn(ev.id)) t.push('<span class="tag bet">Apostado</span>');
-    t.push(smartTag(a), sharpTag(a));
+    t.push(marketTag(a), smartTag(a), sharpTag(a));
     return t.join('');
   }
-  t.push(smartTag(a), sharpTag(a));
+  t.push(marketTag(a), smartTag(a), sharpTag(a));
   if (a.golden.length) t.push('<span class="tag gold">★ Oro</span>');
   const v = a.sels.filter((s) => s.value);
   if (v.length && a.ev.state === 'pre') t.push(`<span class="tag value">Valor ${pct(Math.max(...v.map((s) => s.ev)), 1)}</span>`);
@@ -925,6 +1065,7 @@ function viewGold() {
 const BET_STATE = {
   open: { cls: 'bc-open', icon: '⏳', text: 'Abierta' },
   live: { cls: 'bc-live', icon: '●', text: 'En vivo' },
+  ended: { cls: 'bc-ended', icon: '🏁', text: 'Terminado · liquidando' },
   cash: { cls: 'bc-cashnow', icon: '💸', text: 'Conviene cobrar' },
   won: { cls: 'bc-won', icon: '✅', text: 'Ganada' },
   lost: { cls: 'bc-lost', icon: '❌', text: 'Perdida' },
@@ -938,6 +1079,9 @@ const cashOutSuggested = (c) => !!c && c.live && c.profit > 0 && c.p < 0.85;
 function betStateKey(b, c) {
   if (b.status !== 'pending') return b.status;
   if (cashOutSuggested(c)) return 'cash';
+  // El partido ya terminó: se liquida solo en la siguiente actualización (o se anula si no hay resultado oficial en 3 días).
+  const ev = allEvents().find((e) => e.id === b.eventId);
+  if (ev && ev.state === 'post') return 'ended';
   return c?.live ? 'live' : 'open';
 }
 
@@ -1030,7 +1174,42 @@ function viewBank() {
   <div class="widget glass"><table class="t"><thead><tr><th>Deporte</th><th class="num">Partidos evaluados</th><th class="num">Acierto del favorito</th><th class="num">Brier modelo</th><th class="num">Brier mercado</th><th class="num">Peso del modelo</th></tr></thead><tbody>
     ${Object.keys(st.weights).map((s) => { const x = L[s]; return `<tr><td>${D.SPORT_ICON[s]} ${D.SPORT_NAME[s]}</td><td class="num">${x?.n || 0}</td><td class="num">${pct(x?.hitRate)}</td><td class="num">${x ? x.bm.toFixed(3) : '—'}</td><td class="num">${x?.bk != null ? x.bk.toFixed(3) : '—'}</td><td class="num"><b>${pct(st.weights[s])}</b></td></tr>`; }).join('')}
   </tbody></table><div class="note mt">El bot guarda su predicción de cada partido antes de que empiece. Con 15 partidos terminados o más en un deporte, ajusta cuánto confía en su modelo frente al mercado. Así aprende sin arriesgar dinero.</div></div>
+  ${knowledgeSection()}
   <div class="section-title">Actividad</div><div class="widget glass">${logList(40)}</div>`;
+}
+
+// Conocimiento acumulado: calibración de probabilidades y base de datos de apuestas liquidadas.
+function knowledgeSection() {
+  const cal = B.calibration();
+  if (!S.ledger && !S.ledgerLoading) {
+    S.ledgerLoading = true;
+    fetch('/api/ledger', { cache: 'no-store' }).then((r) => r.json()).then((x) => { S.ledger = x; }).catch(() => { S.ledger = []; }).finally(() => { S.ledgerLoading = false; if (S.tab === 'bank') render(); });
+  }
+  const led = S.ledger || [];
+  const done = led.filter((x) => x.status === 'won' || x.status === 'lost' || x.status === 'cashout');
+  const prof = done.reduce((s, x) => s + (x.profit ?? ((x.payout || 0) - x.stake)), 0);
+  // Por rango de momio: dónde gana y dónde pierde el bot (con todas las apuestas guardadas).
+  const buckets = {};
+  for (const x of done) { const b = (buckets[B.oddsBucket(x.odds)] ||= { n: 0, w: 0, p: 0, staked: 0 }); b.n++; if (x.status === 'won') b.w++; b.p += x.profit ?? ((x.payout || 0) - x.stake); b.staked += x.stake; }
+  const pts = cal.bins.filter((b) => b.n >= 3);
+  const chart = pts.length >= 2 ? lineChart('calib', {
+    series: [
+      { name: 'Lo que pasó', color: 'var(--blue)', pts: pts.map((b) => ({ x: b.avgP, y: b.freq })) },
+      { name: 'Calibración perfecta', color: 'var(--text-3)', dash: true, pts: [{ x: 0, y: 0 }, { x: 1, y: 1 }] },
+    ], xFmt: (x) => `Dijo ${Math.round(x * 100)}%`, height: 200,
+  }) : '<div class="chart-empty note">Se necesitan más partidos terminados para dibujar la calibración (mínimo 3 por rango).</div>';
+  return `<div class="section-title">Conocimiento del bot <small>Probabilidad, estadística y resultados reales</small></div>
+  <div class="grid two">
+    <div class="widget glass"><h3>Calibración · ${cal.n} probabilidades evaluadas</h3>${chart}
+      <div class="kv mt"><span>Brier (menor es mejor)</span><b>${cal.brier != null ? cal.brier.toFixed(3) : '—'}</b></div>
+      <div class="kv"><span>Error de calibración</span><b>${cal.ece != null ? pct(cal.ece, 1) : '—'}</b></div>
+      <div class="note mt">Si la línea azul va pegada a la diagonal, cuando el bot dice "60%" de verdad pasa 6 de cada 10 veces. Por arriba: es demasiado pesimista; por abajo: demasiado optimista.</div></div>
+    <div class="widget glass"><h3>Base de datos de apuestas · ${led.length} registradas</h3>
+      ${done.length ? `<table class="t"><thead><tr><th>Momio</th><th class="num">Apuestas</th><th class="num">Acierto</th><th class="num">ROI</th></tr></thead><tbody>
+        ${Object.entries(buckets).map(([k, b]) => `<tr><td>${esc(k)}</td><td class="num">${b.n}</td><td class="num">${pct(b.w / b.n)}</td><td class="num ${b.p >= 0 ? 'up' : 'down'}">${pct(b.p / b.staked, 1)}</td></tr>`).join('')}</tbody></table>
+        <div class="kv mt"><span>Resultado total registrado</span><b class="${prof >= 0 ? 'up' : 'down'}">${signed(prof)}</b></div>` : '<div class="empty">Aún no hay apuestas liquidadas en la base de datos.</div>'}
+      <div class="note mt">Cada apuesta liquidada se guarda para siempre en <span class="kbd">data/apuestas.jsonl</span> de tu PC (momio, probabilidades, mercado, sharps y resultado). La IA y el bot la usan para aprender.</div></div>
+  </div>`;
 }
 
 // Aprendizaje sin IA: resultados de las apuestas sombra por segmento.
@@ -1233,28 +1412,43 @@ function closeSheets() {
   $('#sheet').classList.remove('open'); $('#backdrop').classList.remove('open');
 }
 
+// Pinta un contenedor: completo si es otro partido/pestaña; si es el mismo, solo lo que cambió.
+function paint(el, fresh, html) { if (fresh) el.innerHTML = html; else morph(el, html); }
+
+// Logo oficial de la liga o torneo (ESPN, LoL Esports, Liquipedia…); si no hay, el icono del deporte.
+function lgMark(lg, ev = null, cls = 'lg-logo') {
+  const src = ev?.leagueLogo || D.LEAGUE_LOGO[lg.id] || lg.logo || '';
+  // Logos con letras oscuras (ATP, WTA, boxeo) llevan fondo claro para verse en el tema oscuro.
+  if (['atp', 'wta', 'boxing'].includes(lg.id) && !ev?.leagueLogo) cls += ' lg-onlight';
+  return src ? `<img class="${cls}" src="${esc(src)}" alt="" loading="lazy">` : `<span class="${cls} lg-emoji">${D.SPORT_ICON[lg.sport]}</span>`;
+}
+
 function renderSheet() {
   const a = S.analysis.get(S.open);
   if (!a) return;
   const ev = a.ev, lg = D.leagueById(ev.leagueId), sum = S.summaries.get(S.open);
-  $('#sheet-title').innerHTML = `<div class="note">${D.SPORT_ICON[ev.sport]} ${esc(lg.name)}${ev.tournament ? ' · ' + esc(ev.tournament) + ' · ' + esc(ev.round) : ''}${ev.venue && !ev.tournament ? ' · ' + esc(ev.venue) : ''}</div>`;
+  const sheetKey = S.open + '|' + S.sheetTab, sheetFresh = $('#sheet-body').dataset.k !== sheetKey;
+  $('#sheet-body').dataset.k = sheetKey;
+  paint($('#sheet-title'), sheetFresh, `<div class="note sheet-league">${lgMark(lg, ev)} ${esc(lg.name)}${ev.tournament ? ' · ' + esc(ev.tournament) + ' · ' + esc(ev.round) : ''}${ev.venue && !ev.tournament ? ' · ' + esc(ev.venue) : ''}</div>`);
   const big = ev.state === 'pre' ? (ev.sport === 'esports' ? `Bo${ev.bestOf}` : 'vs') : ev.sport === 'tennis' ?`${(a.model.live?.sets || [0, 0]).join('-')}` : `${ev.home.score ?? 0} - ${ev.away.score ?? 0}`;
   const status = ev.state === 'in' ? `<span class="live-tag" style="color:var(--red)"><span class="dot live"></span> ${esc(ev.detail)}</span>` : ev.state === 'post' ? 'Final' : new Date(ev.date).toLocaleString('es-MX', { weekday: 'long', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   const team = (t) => `<div>${t.logo ? `<img src="${esc(t.logo)}" alt="" onerror="this.remove()">` : `<div style="font-size:40px">${D.SPORT_ICON[ev.sport]}</div>`}<div class="tname">${esc(t.name)}</div><div class="note">${esc(t.record || t.flag || '')}${t.form ? ' · ' + esc(t.form) : ''}</div></div>`;
   const tabs = ev.sport === 'mma' || ev.sport === 'boxing'
-    ? [['analysis', 'Análisis'], ['smart', '🧠 Dinero inteligente'], ['fighters', 'Peleadores'], ['markets', 'Mercados y momios'], ['experts', 'Especialistas'], ['ai', '✦ IA']]
+    ? [['analysis', 'Análisis'], ['charts', '📈 Gráficas'], ['smart', '🧠 Dinero inteligente'], ['fighters', 'Peleadores'], ['markets', 'Mercados y momios'], ['experts', 'Especialistas'], ['ai', '✦ IA']]
     : ev.sport === 'esports'
-    ? [['analysis', 'Análisis'], ['smart', '🧠 Dinero inteligente'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']]
-    : [['analysis', 'Análisis'], ['smart', '🧠 Dinero inteligente'], ['lineups', ev.sport === 'soccer' ? 'Alineaciones' : 'Plantilla'], ['stats', 'Estadísticas'], ['feed', 'Minuto a minuto'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']];
-  $('#sheet-body').innerHTML = `<div class="scoreboard">${team(ev.home)}<div><div class="big">${esc(big)}</div><div class="st">${status}</div>${ev.sport === 'tennis' && ev.state !== 'pre' ? `<div class="note">${ev.home.linescores.join(' ')}<br>${ev.away.linescores.join(' ')}</div>` : ''}</div>${team(ev.away)}</div>
+    ? [['analysis', 'Análisis'], ['charts', '📈 Gráficas'], ['smart', '🧠 Dinero inteligente'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']]
+    : [['analysis', 'Análisis'], ['charts', '📈 Gráficas'], ['smart', '🧠 Dinero inteligente'], ['lineups', ev.sport === 'soccer' ? 'Alineaciones' : 'Plantilla'], ['stats', 'Estadísticas'], ['feed', 'Minuto a minuto'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']];
+  paint($('#sheet-body'), sheetFresh, `<div class="scoreboard">${team(ev.home)}<div><div class="big">${esc(big)}</div><div class="st">${status}</div>${ev.sport === 'tennis' && ev.state !== 'pre' ? `<div class="note">${ev.home.linescores.join(' ')}<br>${ev.away.linescores.join(' ')}</div>` : ''}</div>${team(ev.away)}</div>
     ${ev.maps?.length ? `<div class="maps-strip">${ev.maps.map((m) => `<div class="map-chip ${m.status}${m.winner ? ' w-' + m.winner : ''}"><div class="note">Mapa ${m.n}${m.map ? ' · ' + esc(m.map) : ''}</div><b>${m.status === 'done' ? `${m.home}-${m.away}` : m.status === 'live' ? '<span class="dot live"></span> en juego' : '—'}</b></div>`).join('')}
       <div class="note maps-src">Mapas en tiempo real: ${esc(ev.liveSource || '')}</div></div>` : ''}
     <div class="segmented tabs-inline">${tabs.map(([k, l]) => `<button data-stab="${k}" class="${S.sheetTab === k ? 'active' : ''}">${l}</button>`).join('')}</div>
-    <div id="stab-body">${sheetTab(a, sum)}</div>`;
+    <div id="stab-body">${sheetTab(a, sum)}</div>`);
   labelTables($('#sheet-body'));
-  if (S.sheetTab === 'news') loadMatchNews(a);
-  if (S.sheetTab === 'fighters') loadFighters(a);
-  if (S.sheetTab === 'experts') loadExperts(a);
+  if (sheetFresh) {
+    if (S.sheetTab === 'news') loadMatchNews(a);
+    if (S.sheetTab === 'fighters') loadFighters(a);
+    if (S.sheetTab === 'experts') loadExperts(a);
+  }
   if ((S.sheetTab === 'smart' || S.sheetTab === 'analysis') && pmSource(a) && !S.smart.events.get(S.open)) showEventSmart(a, { perSide: S.sheetTab === 'smart' ? 6 : 4 });
 }
 
@@ -1272,6 +1466,7 @@ function sheetTab(a, sum) {
     case 'markets': return tabFightMarkets(a);
     case 'experts': return '<div id="experts-box">' + loading + '</div>';
     case 'smart': return tabEventSmart(a);
+    case 'charts': return tabCharts(a, sum);
   }
   return '';
 }
@@ -1296,6 +1491,7 @@ function tabAnalysis(a) {
     <td>${ev.state !== 'post' ? `<button class="btn small ${s.value && ev.state === 'pre' ? 'primary' : ''}" data-slip="${key(ev)}|${s.pick}">Apostar</button>` : ''}</td></tr>`; }).join('')}
   </tbody></table></div>
   ${a.golden.length ? `<div class="grid opps mt">${a.golden.map((g) => oppCard(g, a)).join('')}</div>` : ''}
+  ${botConclusionBox(a)}
   ${eventSmartSummary(a)}
   <div class="note mt">Momio mínimo MX = el momio a partir del cual la apuesta tiene EV ≥ ${pct(st.settings.minEV)} según la estimación final. Momio decimal; entre paréntesis, el formato americano que usa Caliente.</div>`;
 }
@@ -1334,6 +1530,99 @@ function injuriesBlock(sum) {
   const inj = (sum.injuries || []).filter((t) => t.list.length);
   if (!inj.length) return '';
   return `<div class="widget mt" style="background:var(--fill)"><h3>Lesiones y bajas</h3>${inj.map((t) => `<div class="mt"><b>${esc(t.team)}</b>${t.list.map((i) => `<div class="note">• ${esc(i.name)} — ${esc(i.status)} ${esc(i.detail)}</div>`).join('')}</div>`).join('')}</div>`;
+}
+
+// ---------- Gráficas del partido ----------
+// Historial de la probabilidad que calcula el bot en cada actualización (en esta sesión).
+S.probHist = new Map(); S.pmHist = new Map();
+function recordProb(a) {
+  const k = key(a.ev), ml = a.sels.filter((s) => s.market === '1X2' || s.market === 'Ganador');
+  if (!ml.length || a.ev.state === 'post') return;
+  const pt = { t: Date.now() };
+  for (const s of ml) pt[s.pick] = s.p;
+  const arr = S.probHist.get(k) || [];
+  const last = arr[arr.length - 1];
+  if (last && Date.now() - last.t < 15_000 && Math.abs((last.home ?? 0) - (pt.home ?? 0)) < 0.005) return;
+  arr.push(pt);
+  if (arr.length > 400) arr.splice(0, arr.length - 400);
+  S.probHist.set(k, arr);
+}
+async function loadPmHist(a) {
+  const k = key(a.ev), src = pmSource(a);
+  if (!src?.cond) return;
+  const cur = S.pmHist.get(k);
+  if (cur && (cur.busy || Date.now() - cur.t < 60_000)) return;
+  S.pmHist.set(k, { ...(cur || {}), busy: true, t: Date.now() });
+  try {
+    const out = { t: Date.now(), busy: false };
+    for (const side of ['home', 'away', 'draw']) if (src.cond[side]?.token) out[side] = await priceHistory(src.cond[side].token);
+    S.pmHist.set(k, out);
+  } catch (e) { S.pmHist.set(k, { t: Date.now(), busy: false, error: e.message }); }
+  if (S.open === k && S.sheetTab === 'charts') renderSheet();
+}
+
+// Conclusión propia del bot: combina su modelo, el mercado (Polymarket/Kalshi), los sharps y el valor.
+// Se muestra distinta a los datos de las fuentes para que sepas que es una opinión del bot.
+function botConclusion(a) {
+  const ev = a.ev, ml = a.sels.filter((s) => s.market === '1X2' || s.market === 'Ganador');
+  if (!ml.length || ev.state === 'post') return null;
+  const best = [...ml].sort((x, y) => y.p - x.p)[0];
+  const name = best.pick === 'draw' ? 'Empate' : ev[best.pick].name;
+  const favOf = (key) => { const v = ml.filter((s) => s[key] != null); return v.length ? v.sort((x, y) => y[key] - x[key])[0].pick : null; };
+  const modelFav = favOf('pModel'), marketFav = favOf('pMarket');
+  const sharp = S.smart.events.get(key(ev))?.best || null;
+  const agree = [modelFav, marketFav, sharp].filter((x) => x === best.pick).length;
+  const reasons = [];
+  if (marketFav) reasons.push(marketFav === best.pick ? 'el mercado coincide' : 'el mercado ve otro favorito');
+  if (modelFav && ml[0].pModel != null) reasons.push(modelFav === best.pick ? 'su modelo coincide' : 'su modelo ve otro favorito');
+  if (sharp) reasons.push(sharp === best.pick ? 'los sharps están del mismo lado' : 'los sharps están del otro lado');
+  const value = ml.find((s) => s.value && ev.state === 'pre');
+  if (value) reasons.push(`hay valor en ${value.pick === 'draw' ? 'el empate' : ev[value.pick].name} (EV ${pct(value.ev, 1)})`);
+  const conf = best.p >= 0.65 && agree >= 2 ? 'Alta' : best.p >= 0.5 && agree >= 1 ? 'Media' : 'Baja';
+  return { pick: best.pick, name, p: best.p, conf, reasons, value };
+}
+function botConclusionBox(a) {
+  const c = botConclusion(a);
+  if (!c) return '';
+  return `<div class="widget bot-concl mt"><div class="bot-concl-head">🤖 Conclusión del bot <span class="tag">opinión propia · no es una fuente</span></div>
+    <div class="bot-concl-pick">${esc(c.name)} <b>${pct(c.p)}</b> <span class="tag conf-${c.conf.toLowerCase()}">Confianza ${c.conf}</span></div>
+    <div class="note">${c.reasons.length ? 'Porque ' + esc(c.reasons.join(', ')) + '.' : 'Basada solo en su modelo: no hay mercado ni sharps para comparar.'}</div></div>`;
+}
+
+function tabCharts(a, sum) {
+  const ev = a.ev, k = key(ev);
+  const C = { home: 'var(--blue)', away: 'var(--orange-fill)', draw: 'var(--text-3)' };
+  const nm = { home: ev.home.name, away: ev.away.name, draw: 'Empate' };
+  const myBets = B.getState().bets.filter((b) => b.eventId === ev.id && b.status === 'pending');
+  const refs = myBets.filter((b) => b.pick in nm).map((b) => ({ y: 1 / b.odds, label: `Tu apuesta ${nm[b.pick]} @ ${dec(b.odds)} (equilibrio ${pct(1 / b.odds)})`, color: C[b.pick] }));
+  const hm = (t) => new Date(t).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+  const dm = (t) => new Date(t).toLocaleString('es-MX', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  // 1) Probabilidad de ganar durante el partido: ESPN jugada por jugada; si no hay, la del bot en cada actualización.
+  const wp = sum?.wpSeries || [];
+  let liveChart;
+  if (wp.length > 2) {
+    const sides = [['home', wp.map((w, i) => ({ x: i, y: w.home }))], ['away', wp.map((w, i) => ({ x: i, y: Math.max(0, 1 - w.home - w.tie) }))]];
+    if (wp.some((w) => w.tie > 0)) sides.push(['draw', wp.map((w, i) => ({ x: i, y: w.tie }))]);
+    liveChart = lineChart('wp-' + k, { series: sides.map(([s, pts]) => ({ name: nm[s], color: C[s], pts })), refs, xFmt: (x) => (x === 0 ? 'Inicio' : `Jugada ${Math.round(x)}`) });
+  } else {
+    const h = S.probHist.get(k) || [];
+    const sides = ['home', 'away', 'draw'].filter((s) => h.some((p) => p[s] != null));
+    liveChart = lineChart('bot-' + k, { series: sides.map((s) => ({ name: nm[s], color: C[s], pts: h.filter((p) => p[s] != null).map((p) => ({ x: p.t, y: p[s] })) })), refs, xFmt: hm, empty: 'La gráfica se llena con cada actualización (cada 5 s en vivo) mientras la app está abierta.' });
+  }
+  // 2) Precio en Polymarket a lo largo del tiempo (movimiento del mercado).
+  const src = pmSource(a), ph = S.pmHist.get(k);
+  if (src && !ph) loadPmHist(a);
+  const pmChart = !src ? '<div class="chart-empty note">Este partido no tiene mercado en Polymarket.</div>'
+    : !ph || ph.busy && !ph.home ? '<div class="shimmer"></div><div class="shimmer"></div>'
+    : ph.error ? `<div class="warn">${esc(ph.error)}</div>`
+    : lineChart('pm-' + k, { series: ['home', 'away', 'draw'].filter((s) => ph[s]?.length).map((s) => ({ name: nm[s], color: C[s], pts: ph[s].map((p) => ({ x: p.t, y: p.p })) })), refs, xFmt: dm, empty: 'Polymarket todavía no tiene operaciones en este mercado.' });
+  // 3) Comparativa de estadísticas (ESPN) y forma reciente.
+  const stats = sum && !sum.error ? tabStats(a, sum) : '<div class="shimmer"></div>';
+  return `${botConclusionBox(a)}
+    <div class="widget mt chart-card"><h3>Probabilidad de ganar ${wp.length > 2 ? '· jugada por jugada (ESPN)' : '· estimación del bot'}</h3>${liveChart}</div>
+    <div class="widget mt chart-card"><h3><img class="src-ic" src="https://polymarket.com/icons/favicon-32x32.png" alt=""> Precio en Polymarket · historial</h3>${pmChart}
+      <div class="note">Precio = probabilidad que paga el mercado con dinero real. Si sube antes del partido, entró dinero de ese lado.</div></div>
+    <div class="widget mt chart-card"><h3>Comparativa del partido</h3>${stats}</div>`;
 }
 
 function tabStats(a, sum) {
@@ -2216,7 +2505,8 @@ async function liveTick() {
   try {
     await Promise.allSettled(leagues.map((lg) => refreshLeague(lg)));
     const events = allEvents();
-    B.settleWithEvents(events); B.settleShadow(events);
+    B.settleWithEvents(events); B.settleShadow(events); B.cleanSlip(events);
+    detectChanges();
     S.lastUpdate = Date.now();
     render();
   } finally { liveBusy = false; }

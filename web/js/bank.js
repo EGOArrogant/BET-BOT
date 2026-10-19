@@ -271,18 +271,45 @@ function resultOf(bet, ev) {
   return winner === bet.pick ? 'won' : 'lost';
 }
 
+// Busca el partido de una apuesta: primero por id; si cambió (p. ej. eSports cambia de horario
+// o la fuente es otra), por los nombres de los equipos y la fecha (±12 h).
+const normName = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/\b(team|esports?|gaming|club|fc|cf|sc|ac)\b/g, '').replace(/[^a-z0-9]/g, '');
+const sameName = (a, b) => { const x = normName(a), y = normName(b); return !!x && !!y && (x === y || (Math.min(x.length, y.length) >= 4 && (x.includes(y) || y.includes(x)))); };
+export function findEvent(b, events, byId) {
+  const ev = byId ? byId.get(b.eventId) : events.find((e) => e.id === b.eventId);
+  if (ev) return { ev, swap: false };
+  const t = new Date(b.eventDate).getTime();
+  const home = b.home ?? String(b.name || b.eventName || '').split(' vs ')[0];
+  const away = b.away ?? String(b.name || b.eventName || '').split(' vs ')[1];
+  for (const e of events) {
+    if (e.sport !== b.sport || Math.abs(new Date(e.date).getTime() - t) > 12 * 3600_000) continue;
+    if (sameName(e.home.name, home) && sameName(e.away.name, away)) return { ev: e, swap: false };
+    // Mismo partido con local y visita invertidos (pasa entre fuentes de eSports).
+    if (sameName(e.home.name, away) && sameName(e.away.name, home)) return { ev: e, swap: true };
+  }
+  return null;
+}
+const swapEv = (ev) => ({ ...ev, home: ev.away, away: ev.home });
+
+// Avisos al liquidar (la app los usa para el registro en la base de datos y el panel en vivo).
+const settleListeners = new Set();
+export const onSettled = (fn) => settleListeners.add(fn);
+
 export function settleWithEvents(events) {
   const byId = new Map(events.map((e) => [e.id, e]));
   let changed = false;
   for (const b of state.bets) {
     if (b.status !== 'pending') continue;
-    const ev = byId.get(b.eventId);
-    if (!ev || !ev.completed) continue;
+    const found = findEvent(b, events, byId);
+    if (!found || !found.ev.completed) continue;
+    const ev = found.swap ? swapEv(found.ev) : found.ev;
     const r = resultOf(b, ev);
     if (!r) continue;
     b.status = r;
     b.finalScore = `${ev.home.score ?? '-'}-${ev.away.score ?? '-'}`;
     b.settledAt = Date.now();
+    b.settledBy = 'auto';
     if (!b.live && ev.odds && ev.odds[b.pick]) b.closingOdds = ev.odds[b.pick];
     if (r === 'won') { b.payout = round2(b.stake * b.odds); state.bankroll = round2(state.bankroll + b.payout); }
     if (r === 'void') { b.payout = b.stake; state.bankroll = round2(state.bankroll + b.stake); }
@@ -292,11 +319,37 @@ export function settleWithEvents(events) {
       if (r === 'won') bk.balance = round2(Number(bk.balance) + b.payout - b.stake);
       if (r === 'lost') bk.balance = round2(Number(bk.balance) - b.stake);
     }
-    log(`${r === 'won' ? '✅ Ganada' : r === 'lost' ? '❌ Perdida' : '↩️ Anulada'}: ${b.label} (${b.eventName}) ${b.finalScore}`, r);
+    log(`${r === 'won' ? '✅ Ganada' : r === 'lost' ? '❌ Perdida' : '↩️ Anulada'}: ${b.label} (${b.eventName}) ${b.finalScore}${r === 'won' ? ` · cobra $${b.payout} @ ${b.odds.toFixed(2)}` : ''}`, r);
+    settleListeners.forEach((fn) => { try { fn(b, ev); } catch {} });
     changed = true;
   }
   if (changed) { state.history.push({ t: Date.now(), bankroll: equityNow() }); save(); }
   return changed;
+}
+
+// Limpieza: apuestas cuyo partido terminó hace más de 3 días sin resultado oficial (cancelado, pospuesto
+// o la fuente lo borró) se anulan solas y se devuelve el monto, para que no se queden "en juego" para siempre.
+export function voidStale(maxAgeH = 72) {
+  let changed = false;
+  for (const b of state.bets) {
+    if (b.status !== 'pending' || Date.now() - new Date(b.eventDate).getTime() < maxAgeH * 3600_000) continue;
+    b.status = 'void'; b.payout = b.stake; b.settledAt = Date.now(); b.settledBy = 'sin-resultado';
+    state.bankroll = round2(state.bankroll + b.stake);
+    log(`↩️ Anulada por falta de resultado oficial (${maxAgeH} h después): ${b.label} (${b.eventName}). Se devolvieron $${b.stake}`, 'void');
+    settleListeners.forEach((fn) => { try { fn(b, null); } catch {} });
+    changed = true;
+  }
+  for (const s of state.shadow) if (s.status === 'pending' && Date.now() - new Date(s.eventDate).getTime() > maxAgeH * 3600_000) { s.status = 'void'; s.profit = 0; changed = true; }
+  if (changed) { state.history.push({ t: Date.now(), bankroll: equityNow() }); save(); }
+  return changed;
+}
+
+// El boleto se limpia solo: se quitan selecciones de partidos que ya empezaron o terminaron.
+export function cleanSlip(events) {
+  const byId = new Map(events.map((e) => [e.id, e]));
+  const before = state.slip.length;
+  state.slip = state.slip.filter((x) => { const ev = byId.get(x.eventId); return !ev || ev.state === 'pre'; });
+  if (state.slip.length !== before) save();
 }
 
 // ---------- aprendizaje sin IA: apuestas sombra ----------
@@ -324,8 +377,9 @@ export function settleShadow(events) {
   let changed = false;
   for (const s of state.shadow) {
     if (s.status !== 'pending') continue;
-    const ev = byId.get(s.eventId);
-    if (!ev || !ev.completed) continue;
+    const found = findEvent(s, events, byId);
+    if (!found || !found.ev.completed) continue;
+    const ev = found.swap ? swapEv(found.ev) : found.ev;
     const r = resultOf(s, ev);
     if (!r) continue;
     s.status = r;
@@ -376,6 +430,7 @@ export function recordPrediction(ev, model, sels) {
   state.predictions[ev.id] = {
     sport: ev.sport, leagueId: ev.leagueId, date: ev.date, name: ev.name,
     model: Object.fromEntries(ml.map((s) => [s.pick, s.pModel])),
+    final: Object.fromEntries(ml.map((s) => [s.pick, s.p])), // estimación final (modelo + mercado) que usa el bot
     market: ml.every((s) => s.pMarket != null) ? Object.fromEntries(ml.map((s) => [s.pick, s.pMarket])) : null,
     done: false,
   };
@@ -411,6 +466,29 @@ export function learnFromEvents(events) {
   }
   save();
   return true;
+}
+
+// Calibración: cuando el bot dice "60%", ¿gana de verdad 6 de cada 10? Se agrupan todas sus
+// estimaciones de partidos terminados por rango de probabilidad y se compara con lo que pasó.
+const CAL_BINS = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0001];
+export function calibration(sport = null) {
+  const bins = CAL_BINS.slice(0, -1).map((lo, i) => ({ lo, hi: CAL_BINS[i + 1], n: 0, sumP: 0, hits: 0 }));
+  let n = 0, brierSum = 0, logLoss = 0;
+  for (const p of Object.values(state.predictions)) {
+    if (!p.done || (sport && p.sport !== sport)) continue;
+    const probs = p.final || p.model;
+    for (const [pick, prob] of Object.entries(probs)) {
+      if (prob == null) continue;
+      const hit = pick === p.outcome ? 1 : 0;
+      const b = bins.find((x) => prob >= x.lo && prob < x.hi);
+      b.n++; b.sumP += prob; b.hits += hit;
+      n++; brierSum += (prob - hit) ** 2; logLoss += -Math.log(Math.max(1e-6, hit ? prob : 1 - prob));
+    }
+  }
+  for (const b of bins) { b.avgP = b.n ? b.sumP / b.n : null; b.freq = b.n ? b.hits / b.n : null; }
+  // Error de calibración esperado (ECE): diferencia promedio entre lo que dice y lo que pasa.
+  const ece = n ? bins.reduce((a, b) => a + (b.n ? (b.n / n) * Math.abs(b.avgP - b.freq) : 0), 0) : null;
+  return { bins, n, brier: n ? brierSum / n : null, logLoss: n ? logLoss / n : null, ece };
 }
 
 export function learningStats() {
