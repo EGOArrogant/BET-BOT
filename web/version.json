@@ -1,8 +1,9 @@
 {
-  "version": "1.9.0",
+  "version": "1.9.1",
   "date": "2026-10-18",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "La ventana del servidor ya no muestra \"El nombre de red especificado ya no está disponible\" cuando el navegador o el iPhone cancelan una consulta (no era una falla)",
     "Notificaciones en la pantalla de bloqueo del iPhone, aunque la app esté cerrada: oportunidades de oro, apuestas nuevas, ganadas/perdidas/cobros y entradas de los top apostadores",
     "Eliges qué avisos recibir y puedes enviar un aviso de prueba (Más → Celular en el iPhone)",
     "Acceso fuera de casa con datos móviles mediante Tailscale (gratis), con dirección segura https y sin abrir tu PC a internet",

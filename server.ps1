@@ -8,7 +8,7 @@
 param([int]$Port = 8787)
 
 # Versión del servidor: la app la compara con la de la página para avisar si hace falta reiniciarlo.
-$SERVER_VERSION = '1.9.0'
+$SERVER_VERSION = '1.9.1'
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -858,8 +858,15 @@ try {
       }
     }
     catch {
-      Write-Host "Error en $path : $($_.Exception.Message)"
-      try { Send-Text $ctx (@{ error = $_.Exception.Message } | ConvertTo-Json -Compress) 'application/json' 500 } catch {}
+      $ex = $_.Exception; while ($ex.InnerException) { $ex = $ex.InnerException }
+      # El navegador o el iPhone dejo de esperar la respuesta (recargo, cambio de seccion, se bloqueo la pantalla,
+      # cambio de red o se cancelo la consulta): no es un error del bot, se descarta en silencio.
+      $gone = ($ex -is [System.Net.HttpListenerException] -and @(64, 995, 1229, 1236) -contains $ex.ErrorCode) -or ($ex -is [System.IO.IOException]) -or ($ex -is [System.ObjectDisposedException])
+      if ($gone) { try { $ctx.Response.Abort() } catch {} }
+      else {
+        Write-Host "Error en $path : $($_.Exception.Message)"
+        try { Send-Text $ctx (@{ error = $_.Exception.Message } | ConvertTo-Json -Compress) 'application/json' 500 } catch {}
+      }
     }
     # Reinicio: abre un servidor nuevo (con el código actualizado) en su propia ventana y cierra este.
     if ($script:restart) {
