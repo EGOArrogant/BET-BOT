@@ -8,6 +8,7 @@ import { updateElo, esportsTable, finishedEsports } from './esports.js';
 import { getPredictionMarkets, matchPrediction, nameScore, priceHistory } from './prediction.js';
 import * as SM from './smart.js';
 import { morph } from './morph.js';
+import * as X from './s365.js';
 import { lineChart } from './charts.js';
 import { initShell, saveSnapshot, pushSupport, pushState, enablePush, disablePush, testPush, setPushPrefs, pushOnHere, isTailscale } from './appshell.js';
 
@@ -90,7 +91,7 @@ async function refreshLeague(lg) {
   }
   // Precios de Polymarket y Kalshi para cada partido (si existen).
   const pmk = await getPredictionMarkets(lg).catch(() => []);
-  for (const ev of events) ev.pm = matchPrediction(ev, pmk);
+  for (const ev of events) { ev.pm = matchPrediction(ev, pmk); attachX365(ev); }
   S.events.set(lg.id, events);
   S.tables.set(lg.id, table);
   for (const k of [...S.analysis.keys()]) if (k.startsWith(lg.id + ':')) S.analysis.delete(k);
@@ -116,6 +117,7 @@ async function refreshAll() {
   // El piloto automático y la práctica diaria corren solo en un dispositivo (evita apuestas duplicadas).
   await autopilot();
   try { await loadRelevantNews(); } catch {}
+  scanX365().catch(() => {}); // xG de 365Scores: forma reciente de los equipos de los próximos partidos (segundo plano)
   refreshSmart().then(() => { mapSmartToEvents(); scanEventSmart(); }); // top apostadores de Polymarket + dinero inteligente por partido (segundo plano)
   mapSmartToEvents();
   collectNotifications();
@@ -314,6 +316,8 @@ async function buildContext(a) {
       peleador_2: { nombre: a.ev.away.name, record: a.ev.away.record, pais: a.ev.away.flag, cinturones: a.ev.away.belts, estadisticas: a.ev.away.athleteId ? await fighterData(a.ev.away) : null },
       mercados_de_metodo: (a.ev.pm?.sources || []).flatMap((s) => (s.props || []).map((p) => ({ pregunta: p.q, si: p.prices[0], operado: p.traded }))),
     } : undefined,
+    xg_365scores: (() => { const r = S.x365.get(key(a.ev)); if (!r) return undefined; const fm = (t) => t && { xg_a_favor_prom: t.for != null ? +t.for.toFixed(2) : null, xg_en_contra_prom: t.against != null ? +t.against.toFixed(2) : null, partidos: t.n, ultimos: t.series.map((s) => `vs ${s.opp}: ${s.for}-${s.against}`) };
+      return { forma_local: fm(r.form?.home), forma_visitante: fm(r.form?.away), xg_partido: r.data?.xg || null, xpoints: r.data?.xg ? X.xPoints(r.data.xg.home, r.data.xg.away) : null, estadisticas: r.data?.stats?.slice(0, 20).map((s) => `: ${s.home ?? '-'} vs ${s.away ?? '-'}`) }; })(),
     valor_plantilla_transfermarkt: a.ev.sport === 'soccer' ? await Promise.all([D.squadValue(a.ev.home.name), D.squadValue(a.ev.away.name)]).then(([h, w]) => (h || w ? { local: h && { club: h.name, valor: h.valueTxt, jugadores: h.squad }, visitante: w && { club: w.name, valor: w.valueTxt, jugadores: w.squad } } : null)).catch(() => null) : undefined,
     top_apostadores_polymarket: (() => {
       const agg = S.smart.byEvent.get(key(a.ev));
@@ -439,7 +443,7 @@ function labelTables(root) {
 function serverBanner() {
   if (!S.cfg.local || !S.version) return '';
   const sv = S.cfg.serverVersion;
-  if (sv && cmpVer(sv, '2.1.0') >= 0) return '';
+  if (sv && cmpVer(sv, '2.2.0') >= 0) return '';
   return `<div class="warn" style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><div class="grow"><b>El servidor sigue con la versión anterior.</b> Algunas funciones (como Top Polymarket) no van a funcionar hasta reiniciarlo.</div><button class="btn small primary" data-restartserver>↻ Reiniciar servidor</button></div>`;
 }
 
@@ -1204,6 +1208,10 @@ function knowledgeSection() {
     <div class="widget glass"><h3>Calibración · ${cal.n} probabilidades evaluadas</h3>${chart}
       <div class="kv mt"><span>Brier (menor es mejor)</span><b>${cal.brier != null ? cal.brier.toFixed(3) : '—'}</b></div>
       <div class="kv"><span>Error de calibración</span><b>${cal.ece != null ? pct(cal.ece, 1) : '—'}</b></div>
+      ${(() => { const cx = B.calibration('soccer', { xg: true }), cn = B.calibration('soccer', { xg: false });
+        const f = (c) => (c.n ? `${c.brier.toFixed(3)} <span class="note">(${c.n})</span>` : '<span class="note">sin datos aún</span>');
+        return `<div class="kv"><span>Fútbol con xG de 365Scores · Brier</span><b>${f(cx)}</b></div><div class="kv"><span>Fútbol sin xG · Brier</span><b>${f(cn)}</b></div>
+          ${cx.n >= 30 && cn.n >= 30 ? `<div class="note">${cx.brier < cn.brier ? '✅ El xG está mejorando las predicciones de fútbol.' : '⚠️ Con xG todavía no mejora: el bot seguirá midiendo.'}</div>` : '<div class="note">Con 30 o más probabilidades de cada tipo se sabrá si el xG mejora al modelo.</div>'}`; })()}
       <div class="note mt">Si la línea azul va pegada a la diagonal, cuando el bot dice "60%" de verdad pasa 6 de cada 10 veces. Por arriba: es demasiado pesimista; por abajo: demasiado optimista.</div></div>
     <div class="widget glass"><h3>Base de datos de apuestas · ${led.length} registradas</h3>
       ${done.length ? `<table class="t"><thead><tr><th>Momio</th><th class="num">Apuestas</th><th class="num">Acierto</th><th class="num">ROI</th></tr></thead><tbody>
@@ -1623,6 +1631,7 @@ function tabCharts(a, sum) {
     <div class="widget mt chart-card"><h3>Probabilidad de ganar ${wp.length > 2 ? '· jugada por jugada (ESPN)' : '· estimación del bot'}</h3>${liveChart}</div>
     <div class="widget mt chart-card"><h3><img class="src-ic" src="https://polymarket.com/icons/favicon-32x32.png" alt=""> Precio en Polymarket · historial</h3>${pmChart}
       <div class="note">Precio = probabilidad que paga el mercado con dinero real. Si sube antes del partido, entró dinero de ese lado.</div></div>
+    ${xgBlock(a)}
     <div class="widget mt chart-card"><h3>Comparativa del partido</h3>${stats}</div>
     ${advancedBlock(a)}`;
 }
@@ -1663,6 +1672,104 @@ function sourceLinks(a) {
   }
   return `<div class="src-links">${L.map(([n, u, d]) => `<a class="src-link" href="${esc(u)}" target="_blank" rel="noopener"><b>${esc(n)} ↗</b><span class="note">${esc(d)}</span></a>`).join('')}</div>`;
 }
+// ---------- xG de 365Scores ----------
+// key -> { game: {id, homeId, awayId}, data (xG del partido, remates, estadísticas), form: {home, away}, t, busy }
+S.x365 = new Map();
+function attachX365(ev) {
+  const r = S.x365.get(key(ev));
+  if (!r) return;
+  if (r.form?.home && r.form?.away) ev.xgForm = r.form;
+  if (ev.state === 'in' && r.data?.xg) ev.liveXg = r.data.xg;
+}
+async function loadX365(ev, { data = false, form = false } = {}) {
+  if (ev.sport !== 'soccer' || !X.COMP365[ev.leagueId]) return null;
+  const k = key(ev);
+  const r = S.x365.get(k) || {};
+  if (r.busy) return r;
+  r.busy = true; S.x365.set(k, r);
+  try {
+    if (!r.game) r.game = await X.findGame(ev);
+    if (r.game) {
+      if (data && (ev.state !== 'pre')) r.data = await X.gameData(r.game.id, r.game.homeId, r.game.awayId, ev.state === 'post');
+      if (form && !r.form) {
+        const [h, w] = await Promise.all([X.teamForm(r.game.homeId), X.teamForm(r.game.awayId)]);
+        if (h.n || w.n) r.form = { home: h, away: w }; // si falló la consulta, se vuelve a intentar después
+      }
+    }
+    r.t = Date.now(); r.error = null;
+  } catch (e) { r.error = e.message; }
+  r.busy = false;
+  attachX365(ev);
+  // Con el xG ya disponible, se recalcula el modelo de este partido.
+  if (ev.xgForm || ev.liveXg) { const cur = S.analysis.get(k); if (cur) analyze(cur.ev === ev ? ev : (attachX365(cur.ev), cur.ev), S.tables.get(ev.leagueId), S.summaries.get(k)?.winProb); }
+  return r;
+}
+// Antes del partido: forma de xG de los equipos de las próximas 48 h (pocos por escaneo; luego queda guardado).
+let x365Busy = false;
+async function scanX365() {
+  if (x365Busy) return;
+  x365Busy = true;
+  try {
+    const soon = Date.now() + 48 * 3600_000;
+    const list = allAnalyses().filter((a) => a.ev.sport === 'soccer' && X.COMP365[a.ev.leagueId] && a.ev.state !== 'post' && new Date(a.ev.date).getTime() < soon && !S.x365.get(key(a.ev))?.form)
+      .sort((x, y) => new Date(x.ev.date) - new Date(y.ev.date)).slice(0, 4);
+    for (const a of list) { await loadX365(a.ev, { form: true, data: a.ev.state === 'in' }); analyze(a.ev, S.tables.get(a.ev.leagueId), S.summaries.get(key(a.ev))?.winProb); }
+  } finally { x365Busy = false; }
+}
+// En vivo: xG y estadísticas del partido cada ~15 s (el servidor y este módulo guardan las respuestas).
+async function liveX365() {
+  const live = allAnalyses().filter((a) => a.ev.sport === 'soccer' && a.ev.state === 'in' && X.COMP365[a.ev.leagueId]).slice(0, 8);
+  for (const a of live) { const r = S.x365.get(key(a.ev)); if (!r?.t || Date.now() - r.t > 14_000) await loadX365(a.ev, { data: true, form: true }); }
+}
+
+function xgBlock(a) {
+  const ev = a.ev, k = key(ev);
+  if (ev.sport !== 'soccer' || !X.COMP365[ev.leagueId]) return '';
+  const r = S.x365.get(k);
+  // Solo se pide si no hay nada cargando (si no, se repintaría sin parar mientras carga).
+  const needLoad = !r || (!r.busy && ((!r.t && !r.error) || (ev.state === 'in' && Date.now() - (r.t || 0) > 20_000)));
+  if (needLoad) loadX365(ev, { data: true, form: true }).then(() => { if (S.open === k && S.sheetTab === 'charts') renderSheet(); });
+  if (!r || (!r.t && !r.error)) return '<div class="widget mt chart-card"><h3>Goles esperados (xG) · 365Scores</h3><div class="shimmer"></div><div class="shimmer"></div></div>';
+  if (!r.game) return `<div class="widget mt chart-card"><h3>Goles esperados (xG) · 365Scores</h3><div class="note">${r.error ? esc(r.error) : '365Scores no tiene este partido.'}</div></div>`;
+  const C = { home: 'var(--blue)', away: 'var(--orange-fill)' };
+  let flow = '', xp = '', stats = '';
+  const d = r.data;
+  if (d?.shots?.length) {
+    // Flujo de xG: suma de la calidad de las ocasiones de cada equipo, minuto a minuto (⚽ = gol).
+    const end = Math.max(90, d.minute || 0, ...d.shots.map((s) => s.min));
+    const series = ['home', 'away'].map((side) => {
+      // La suma de los remates no siempre coincide con el xG oficial del partido (365Scores lo ajusta):
+      // se escala la curva para que termine en el xG oficial y los números sean los mismos en toda la pestaña.
+      const own = d.shots.filter((x) => x.side === side), raw = own.reduce((a, x) => a + x.xg, 0);
+      const k2 = d.xg?.[side] != null && raw > 0 ? d.xg[side] / raw : 1;
+      let acc = 0; const pts = [{ x: 0, y: 0 }], marks = [];
+      for (const s of own) { acc += s.xg * k2; pts.push({ x: s.min, y: acc }); if (s.goal) marks.push({ x: s.min, y: acc, label: '⚽' }); }
+      pts.push({ x: ev.state === 'post' ? end : Math.max(d.minute || 0, pts[pts.length - 1].x), y: acc });
+      return { name: ev[side].name, color: C[side], step: true, marks, pts };
+    });
+    const ymax = Math.max(1, Math.ceil(Math.max(...series.map((s) => s.pts[s.pts.length - 1].y)) * 2) / 2);
+    flow = lineChart('xg-' + k, { series, xFmt: (x) => `Min ${Math.round(x)}`, yFmt: (y) => y.toFixed(2) + ' xG', yMax: ymax, yTick: (v) => v.toFixed(1) });
+  } else if (ev.state !== 'pre') flow = '<div class="chart-empty note">365Scores todavía no publica los remates con xG de este partido.</div>';
+  if (d?.xg) {
+    // xPoints: con el xG de cada equipo, ¿cuántos puntos "merecía" cada uno? (Poisson, como en los notebooks de LanusStats)
+    const x = X.xPoints(d.xg.home, d.xg.away);
+    xp = `<div class="opp-nums mt"><div>xG ${esc(ev.home.name)}<b>${d.xg.home.toFixed(2)}</b></div><div>xG ${esc(ev.away.name)}<b>${d.xg.away.toFixed(2)}</b></div>
+      <div>xPoints ${esc(ev.home.abbr || ev.home.name)}<b>${x.home.toFixed(2)}</b></div><div>xPoints ${esc(ev.away.abbr || ev.away.name)}<b>${x.away.toFixed(2)}</b></div></div>
+      <div class="note">Con estas ocasiones, ${esc(ev.home.name)} gana el ${pct(x.pHome)} de las veces, empate ${pct(x.pDraw)} y ${esc(ev.away.name)} ${pct(x.pAway)}. ${ev.state === 'post' ? 'Si el marcador no coincide, hubo suerte o puntería: útil para el próximo partido.' : ''}</div>`;
+    const want = [76, 79, 3, 4, 24, 36, 10, 46, 78];
+    const rows = want.map((id) => d.stats.find((s) => s.id === id)).filter(Boolean);
+    stats = rows.map((s) => { const x1 = parseFloat(s.home), y1 = parseFloat(s.away), tot = (x1 || 0) + (y1 || 0) || 1;
+      return `<div class="statrow"><div class="lbl">${esc(s.name)}</div><div class="v">${esc(s.home ?? '—')}</div><div class="bars"><span style="flex:${(x1 || 0) / tot || 0.5};background:var(--blue)"></span><span style="flex:${(y1 || 0) / tot || 0.5};background:var(--orange-fill)"></span></div><div class="v">${esc(s.away ?? '—')}</div></div>`; }).join('');
+  }
+  // Forma reciente (promedio móvil de xG de los últimos partidos oficiales).
+  const fm = r.form;
+  const formRow = (side) => { const f = fm?.[side]; if (!f?.n) return ''; return `<tr><td><b>${esc(ev[side].name)}</b><div class="note">${f.series.map((s) => `${s.for?.toFixed(1)}-${s.against?.toFixed(1)}`).join(' · ')}</div></td><td class="num">${f.for.toFixed(2)}</td><td class="num">${f.against.toFixed(2)}</td><td class="num ${f.for - f.against >= 0 ? 'up' : 'down'}">${(f.for - f.against >= 0 ? '+' : '') + (f.for - f.against).toFixed(2)}</td><td class="num">${f.n}</td></tr>`; };
+  const form = fm?.home?.n || fm?.away?.n ? `<table class="t mt"><thead><tr><th>Forma xG (últimos oficiales)</th><th class="num">xG a favor</th><th class="num">xG en contra</th><th class="num">Diferencia</th><th class="num">Partidos</th></tr></thead><tbody>${formRow('home')}${formRow('away')}</tbody></table>
+    ${a.model.xg ? `<div class="note">El modelo usa este xG con ${pct(a.model.xg.w)} de peso: goles esperados ${a.model.lh.toFixed(2)} - ${a.model.la.toFixed(2)} (solo con la tabla serían ${a.model.xg.base.lh.toFixed(2)} - ${a.model.xg.base.la.toFixed(2)}).</div>` : ''}` : '';
+  return `<div class="widget mt chart-card"><h3>Goles esperados (xG) · 365Scores${ev.state === 'in' ? ' · en vivo' : ''}</h3>${flow}${xp}${stats}${form}
+    <div class="note mt">xG = probabilidad de gol de cada remate según su posición y tipo. La suma mide la calidad real de las ocasiones, con menos suerte que el marcador.</div></div>`;
+}
+
 function advancedBlock(a) {
   const ev = a.ev, k = key(ev);
   let tm = '';
@@ -2560,6 +2667,7 @@ async function liveTick() {
     await Promise.allSettled(leagues.map((lg) => refreshLeague(lg)));
     const events = allEvents();
     B.settleWithEvents(events); B.settleShadow(events); B.cleanSlip(events);
+    liveX365().catch(() => {}); // xG en vivo de los partidos de fútbol en juego
     detectChanges();
     S.lastUpdate = Date.now();
     render();

@@ -68,19 +68,46 @@ function soccerMinute(ev) {
   return ev.clockSec ? ev.clockSec / 60 : 0;
 }
 
+// xG reciente (365Scores): goles esperados generados y concedidos en los últimos partidos oficiales.
+// Mide la calidad real de las ocasiones, con menos suerte que los goles. Se mezcla con la tabla:
+// hasta 40% de peso con 6 partidos de cada equipo (menos si hay pocos).
+const XG_MAX_W = 0.4, XG_FULL_N = 6;
+function xgLambdas(ev, base) {
+  const f = ev.xgForm;
+  if (!f?.home?.n || !f?.away?.n || f.home.for == null || f.away.for == null) return null;
+  const ha = ev.neutral ? 1 : 1.06, aa = ev.neutral ? 1 : 0.94; // el xG reciente ya mezcla local y visita
+  const lhX = clamp(((f.home.for + f.away.against) / 2) * ha, 0.2, 4.5);
+  const laX = clamp(((f.away.for + f.home.against) / 2) * aa, 0.15, 4);
+  const w = XG_MAX_W * Math.min(1, Math.min(f.home.n, f.away.n) / XG_FULL_N) * (base.known ? 1 : 1.5);
+  return { lhX, laX, w: Math.min(0.6, w) };
+}
+
 function soccerModel(ev, table) {
-  const { lh, la, known } = soccerLambdas(ev, table);
+  const base = soccerLambdas(ev, table);
+  let { lh, la, known } = base;
+  const xg = xgLambdas(ev, base);
+  if (xg) { lh = (1 - xg.w) * lh + xg.w * xg.lhX; la = (1 - xg.w) * la + xg.w * xg.laX; known = true; }
   const line = ev.odds?.total?.line ?? 2.5;
   const pre = soccerOutcome(lh, la, 0, 0, line);
-  let live = null;
+  let live = null, liveXg = null;
   if (ev.state === 'in') {
     const min = soccerMinute(ev);
     const rem = clamp((93 - min) / 90, 0.01, 1) * 1.05; // los goles tardíos son algo más frecuentes
     const cur = (ev.home.score || 0) + (ev.away.score || 0);
     const liveLine = Math.max(line, cur + 0.5); // línea en vivo: la siguiente que todavía está abierta
-    live = { ...soccerOutcome(lh * rem, la * rem, ev.home.score || 0, ev.away.score || 0, liveLine), minute: min, line: liveLine };
+    // Ritmo de xG del partido (365Scores): si un equipo está generando mucho más de lo esperado, su tasa
+    // de gol para lo que resta sube. Peso creciente con los minutos (máx. 50% al final).
+    let rh = lh, ra = la;
+    const lx = ev.liveXg;
+    if (lx && min >= 10) {
+      const f = clamp(min / 90, 0, 1) * 0.5;
+      rh = (1 - f) * lh + f * clamp((lx.home / min) * 90, 0.1, 5);
+      ra = (1 - f) * la + f * clamp((lx.away / min) * 90, 0.1, 5);
+      liveXg = { home: lx.home, away: lx.away, weight: f };
+    }
+    live = { ...soccerOutcome(rh * rem, ra * rem, ev.home.score || 0, ev.away.score || 0, liveLine), minute: min, line: liveLine };
   }
-  return { kind: 'soccer', lh, la, line, pre, live, known };
+  return { kind: 'soccer', lh, la, line, pre, live, known, xg: xg ? { ...xg, base: { lh: base.lh, la: base.la } } : null, liveXg };
 }
 
 // ---------- NFL / NBA / MLB: Pythagorean + log5 + localía ----------

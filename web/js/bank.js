@@ -424,13 +424,18 @@ export const pendingShadows = () => state.shadow.filter((s) => s.status === 'pen
 // Se guarda la predicción previa al partido (modelo y mercado). Al terminar, se compara la
 // precisión (Brier) de ambos y se ajusta cuánto confiar en el modelo en cada deporte.
 export function recordPrediction(ev, model, sels) {
-  if (ev.state !== 'pre' || state.predictions[ev.id]) return;
+  const prev = state.predictions[ev.id];
+  // Se guarda la primera vez y se actualiza hasta que empieza el partido (la última estimación antes del inicio
+  // es la que se califica; así también cuenta el xG de 365Scores, que llega 1–2 días antes).
+  if (ev.state !== 'pre' || prev?.done) return;
   const ml = sels.filter((s) => s.market === '1X2' || s.market === 'Ganador');
   if (!ml.length) return;
+  if (prev && prev.xg && !model.xg) return; // no perder la versión con xG si un momento no hay datos
   state.predictions[ev.id] = {
     sport: ev.sport, leagueId: ev.leagueId, date: ev.date, name: ev.name,
     model: Object.fromEntries(ml.map((s) => [s.pick, s.pModel])),
     final: Object.fromEntries(ml.map((s) => [s.pick, s.p])), // estimación final (modelo + mercado) que usa el bot
+    xg: !!model.xg, // fútbol: el modelo usó el xG reciente de 365Scores (para medir si mejora la calibración)
     market: ml.every((s) => s.pMarket != null) ? Object.fromEntries(ml.map((s) => [s.pick, s.pMarket])) : null,
     done: false,
   };
@@ -471,11 +476,12 @@ export function learnFromEvents(events) {
 // Calibración: cuando el bot dice "60%", ¿gana de verdad 6 de cada 10? Se agrupan todas sus
 // estimaciones de partidos terminados por rango de probabilidad y se compara con lo que pasó.
 const CAL_BINS = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0001];
-export function calibration(sport = null) {
+export function calibration(sport = null, { xg = null } = {}) {
   const bins = CAL_BINS.slice(0, -1).map((lo, i) => ({ lo, hi: CAL_BINS[i + 1], n: 0, sumP: 0, hits: 0 }));
   let n = 0, brierSum = 0, logLoss = 0;
   for (const p of Object.values(state.predictions)) {
     if (!p.done || (sport && p.sport !== sport)) continue;
+    if (xg != null && !!p.xg !== xg) continue;
     const probs = p.final || p.model;
     for (const [pick, prob] of Object.entries(probs)) {
       if (prob == null) continue;

@@ -1,8 +1,13 @@
 {
-  "version": "2.1.0",
+  "version": "2.2.0",
   "date": "2026-10-18",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Fútbol con 365Scores (Liga MX, Champions, Premier, LaLiga, Serie A y Ligue 1): xG por remate, xG del partido y estadísticas avanzadas (xG a puerta, grandes ocasiones, pases clave, asistencias esperadas)",
+    "📈 Gráficas: flujo de xG acumulado minuto a minuto con los goles marcados, y xPoints (puntos que merecía cada equipo según su xG)",
+    "Forma xG de cada equipo: promedio de sus últimos partidos oficiales (xG a favor, en contra y diferencia)",
+    "El modelo de fútbol mezcla la tabla con el xG reciente (hasta 40% de peso) y, en vivo, con el ritmo de xG del partido",
+    "Banca → Conocimiento del bot compara la calibración de fútbol con xG y sin xG para medir si mejora; la IA también recibe el xG",
     "Valorant en vivo desde vlr.gg: marcador de la serie y rondas del mapa en juego (bo3.gg queda de respaldo)",
     "Fútbol: valor de la plantilla de cada equipo (Transfermarkt) comparado en Gráficas → Datos avanzados; la IA también lo recibe",
     "Botones directos a SofaScore, FotMob, FBref, Understat, Transfermarkt, BDFA y dataref en cada partido; Liquipedia, vlr.gg y bo3.gg en eSports",
