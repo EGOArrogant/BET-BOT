@@ -396,6 +396,7 @@ function go(tab, moreTab) {
 
 // Partes fijas: barra lateral, barra inferior, encabezado y contadores.
 function renderChrome() {
+  document.documentElement.dataset.sec = S.tab; // color propio de la sección actual
   const st = B.getState();
   const slipN = st.slip.length, toPlaceN = B.pendingBets().filter((b) => !b.placedReal && b.source !== 'práctica').length;
   const unread = S.notifs.filter((n) => !isRead(n)).length;

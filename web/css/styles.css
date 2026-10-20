@@ -21,32 +21,32 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #020203;
-    --wall-1: #101a33; --wall-2: #1d1630; --wall-3: #0a2220; --wall-4: #24160f;
-    --glass: rgba(14, 14, 17, 0.66);
-    --glass-strong: rgba(22, 22, 26, 0.9);
-    --glass-border: rgba(255, 255, 255, 0.07);
-    --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-    --fill: rgba(120, 120, 128, 0.15);
-    --fill-2: rgba(120, 120, 128, 0.24);
-    --sep: rgba(84, 84, 88, 0.32);
-    --text: #e6e6eb; --text-2: rgba(230, 230, 240, 0.64); --text-3: rgba(230, 230, 240, 0.42);
-    --blue: #8aa4d6; --blue-fill: #34508a; --green: #30d158; --green-fill: #30d158; --red: #ff6961; --red-fill: #ff453a;
+    --bg: #0c0d12;
+    --wall-1: #18294d; --wall-2: #2a2048; --wall-3: #10332f; --wall-4: #352015;
+    --glass: rgba(30, 31, 38, 0.74);
+    --glass-strong: rgba(38, 39, 47, 0.92);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --glass-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --fill: rgba(120, 120, 128, 0.18);
+    --fill-2: rgba(120, 120, 128, 0.28);
+    --sep: rgba(110, 110, 118, 0.38);
+    --text: #ececf1; --text-2: rgba(235, 235, 245, 0.66); --text-3: rgba(235, 235, 245, 0.44);
+    --blue: #86a7e4; --blue-fill: #3b5d9e; --green: #30d158; --green-fill: #30d158; --red: #ff6961; --red-fill: #ff453a;
     --orange: #ffb340; --orange-fill: #ff9f0a; --gold: #ffd60a; --gold-fill: #ffd60a; --purple: #bfa0e0; --teal: #6fb7c8;
-    --chart: #8aa4d6;
+    --chart: #86a7e4;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #020203;
-  --wall-1: #101a33; --wall-2: #1d1630; --wall-3: #0a2220; --wall-4: #24160f;
-  --glass: rgba(14, 14, 17, 0.66); --glass-strong: rgba(22, 22, 26, 0.9); --glass-border: rgba(255, 255, 255, 0.07);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  --fill: rgba(120, 120, 128, 0.15); --fill-2: rgba(120, 120, 128, 0.24); --sep: rgba(84, 84, 88, 0.32);
-  --text: #e6e6eb; --text-2: rgba(230, 230, 240, 0.64); --text-3: rgba(230, 230, 240, 0.42);
-  --blue: #8aa4d6; --blue-fill: #34508a; --green: #30d158; --green-fill: #30d158; --red: #ff6961; --red-fill: #ff453a;
+  --bg: #0c0d12;
+  --wall-1: #18294d; --wall-2: #2a2048; --wall-3: #10332f; --wall-4: #352015;
+  --glass: rgba(30, 31, 38, 0.74); --glass-strong: rgba(38, 39, 47, 0.92); --glass-border: rgba(255, 255, 255, 0.1);
+  --glass-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --fill: rgba(120, 120, 128, 0.18); --fill-2: rgba(120, 120, 128, 0.28); --sep: rgba(110, 110, 118, 0.38);
+  --text: #ececf1; --text-2: rgba(235, 235, 245, 0.66); --text-3: rgba(235, 235, 245, 0.44);
+  --blue: #86a7e4; --blue-fill: #3b5d9e; --green: #30d158; --green-fill: #30d158; --red: #ff6961; --red-fill: #ff453a;
   --orange: #ffb340; --orange-fill: #ff9f0a; --gold: #ffd60a; --gold-fill: #ffd60a; --purple: #bfa0e0; --teal: #6fb7c8;
-  --chart: #8aa4d6;
+  --chart: #86a7e4;
   color-scheme: dark;
 }
 
@@ -638,9 +638,70 @@ html.is-offline #view { filter: grayscale(.6); opacity: .7; transition: filter .
 .src-link:hover { background: color-mix(in srgb, var(--blue) 18%, var(--fill-2)); }
 
 /* Tema oscuro más oscuro y suave para la vista: manchas de color tenues y sin brillo azul fuerte */
-:root[data-theme="dark"] .wallpaper i { opacity: 0.4; }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .wallpaper i { opacity: 0.4; } }
+:root[data-theme="dark"] .wallpaper i { opacity: 0.55; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .wallpaper i { opacity: 0.55; } }
 :root[data-theme="dark"] .brand-icon { background: linear-gradient(135deg, #34508a, #3f3a73); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .brand-icon { background: linear-gradient(135deg, #34508a, #3f3a73); } }
 .report-list { margin: 0; padding-left: 18px; display: grid; gap: 10px; line-height: 1.5; }
 .report-concl { border: 1px solid color-mix(in srgb, var(--blue) 25%, transparent); }
+
+/* ---------- v2.3.1: color propio por sección (diferencia sin saturar la vista) ---------- */
+/* Claro: tonos más profundos para que se lean sobre fondo claro. */
+:root {
+  --acc-home: #2f62c4; --acc-soccer: #23874c; --acc-sports: #b2620f; --acc-combat: #c23b3b; --acc-esports: #7a4fc2;
+  --acc-bet: #9a7400; --acc-gold: #a07800; --acc-smart: #12808a; --acc-bank: #1f8a66; --acc-news: #546a8a; --acc-more: #6b6b75;
+  --accent: var(--acc-home);
+}
+/* Oscuro: tonos pastel apagados, legibles y sin brillo. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --acc-home: #86a7e4; --acc-soccer: #6fc495; --acc-sports: #e2a866; --acc-combat: #e58585; --acc-esports: #b99ae8;
+    --acc-bet: #e3c467; --acc-gold: #efd06e; --acc-smart: #66c3cb; --acc-bank: #7ccfae; --acc-news: #a3b3ca; --acc-more: #b0b0ba;
+  }
+}
+:root[data-theme="dark"] {
+  --acc-home: #86a7e4; --acc-soccer: #6fc495; --acc-sports: #e2a866; --acc-combat: #e58585; --acc-esports: #b99ae8;
+  --acc-bet: #e3c467; --acc-gold: #efd06e; --acc-smart: #66c3cb; --acc-bank: #7ccfae; --acc-news: #a3b3ca; --acc-more: #b0b0ba;
+}
+:root[data-sec="home"] { --accent: var(--acc-home); }
+:root[data-sec="soccer"] { --accent: var(--acc-soccer); }
+:root[data-sec="sports"] { --accent: var(--acc-sports); }
+:root[data-sec="combat"] { --accent: var(--acc-combat); }
+:root[data-sec="esports"] { --accent: var(--acc-esports); }
+:root[data-sec="bet"] { --accent: var(--acc-bet); }
+:root[data-sec="gold"] { --accent: var(--acc-gold); }
+:root[data-sec="smart"] { --accent: var(--acc-smart); }
+:root[data-sec="bank"] { --accent: var(--acc-bank); }
+:root[data-sec="news"] { --accent: var(--acc-news); }
+:root[data-sec="more"] { --accent: var(--acc-more); }
+
+/* Menú lateral y barra inferior: cada sección con su color; la activa, con un fondo suave de ese color. */
+[data-tab="home"] { --c: var(--acc-home); } [data-tab="soccer"] { --c: var(--acc-soccer); } [data-tab="sports"] { --c: var(--acc-sports); }
+[data-tab="combat"] { --c: var(--acc-combat); } [data-tab="esports"] { --c: var(--acc-esports); } [data-tab="bet"] { --c: var(--acc-bet); }
+[data-tab="gold"] { --c: var(--acc-gold); } [data-tab="smart"] { --c: var(--acc-smart); } [data-tab="bank"] { --c: var(--acc-bank); }
+[data-tab="news"] { --c: var(--acc-news); } [data-tab="more"] { --c: var(--acc-more); }
+.side-item svg { color: var(--c, var(--blue)); }
+.side-item.active { background: color-mix(in srgb, var(--c, var(--blue)) 20%, transparent); color: var(--text); box-shadow: inset 3px 0 0 var(--c, var(--blue)); }
+.side-item.active svg { color: var(--c, var(--blue)); }
+.tabbar button.active { color: var(--c, var(--blue)); background: color-mix(in srgb, var(--c, var(--blue)) 16%, transparent); }
+
+/* Título de la página y títulos de sección con el color de la sección. */
+.largetitle { display: inline-flex; align-items: center; gap: 10px; }
+.largetitle::before { content: ""; width: 6px; height: 28px; border-radius: 3px; background: var(--accent); flex: none; }
+.section-title { border-left: 3px solid color-mix(in srgb, var(--accent) 75%, transparent); padding-left: 10px; }
+.widget h3 { color: color-mix(in srgb, var(--accent) 55%, var(--text-2)); }
+
+/* Bloques de liga y tarjetas: una línea superior del color de la sección para separar visualmente. */
+.league-block { border-top: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); }
+.league-head { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+
+/* En vivo por categoría (Inicio): cada categoría con su color. */
+.live-cat[data-key="livecat-soccer"] { --accent: var(--acc-soccer); }
+.live-cat[data-key="livecat-sports"] { --accent: var(--acc-sports); }
+.live-cat[data-key="livecat-combat"] { --accent: var(--acc-combat); }
+.live-cat[data-key="livecat-esports"] { --accent: var(--acc-esports); }
+.live-cat-head { color: var(--accent); }
+
+/* Botones principales: azul medio, menos intenso que el original. */
+.btn.primary { background: var(--blue-fill); }
+.chip.active { background: color-mix(in srgb, var(--accent) 30%, transparent); color: var(--text); border-color: color-mix(in srgb, var(--accent) 60%, transparent); }

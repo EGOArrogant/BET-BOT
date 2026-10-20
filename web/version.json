@@ -1,8 +1,11 @@
 {
-  "version": "2.3.0",
+  "version": "2.3.1",
   "date": "2026-10-19",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Tema oscuro balanceado: un punto intermedio (ni tan negro ni tan claro) y tarjetas que se distinguen mejor del fondo",
+    "Cada sección con su propio color suave: Inicio azul, Fútbol verde, Deportes naranja, Combate rojo, eSports morado, Apostar y Oro dorado, Top Polymarket turquesa, Banca menta, Noticias gris azulado",
+    "El color de la sección aparece en el menú, la barra inferior, el título, los títulos de cada bloque, los filtros activos y las ligas; En vivo de Inicio usa el color de cada categoría",
     "Tema oscuro más oscuro y descansado para la vista: fondo casi negro, manchas de color tenues y azules suaves (botones y pestañas con un azul apagado)",
     "Banca → Reporte de aprendizaje: cómo decide el bot, qué ha aprendido de las apuestas sombra (conclusiones escritas con tus datos) y qué pensó en cada una: su modelo vs. el mercado, la mezcla y el EV",
     "Cada apuesta sombra guarda lo que opinaban su modelo y el mercado, y el peso que usó, para explicar mejor sus decisiones",
