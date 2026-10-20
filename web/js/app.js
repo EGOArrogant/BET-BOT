@@ -1175,6 +1175,7 @@ function viewBank() {
       ${sports.map(([s, v]) => `<tr><td>${D.SPORT_ICON[s]} ${D.SPORT_NAME[s]}</td><td class="num">${v.n}</td><td class="num ${v.profit >= 0 ? 'up' : 'down'}">${signed(v.profit)}</td><td class="num">${pct(v.profit / v.staked, 1)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Aún no hay apuestas liquidadas</div>'}</div>
   </div>
   ${shadowSection()}
+  ${learningReport()}
   <div class="section-title">Precisión del modelo <small>Frente al mercado (Brier: menor es mejor)</small></div>
   <div class="widget glass"><table class="t"><thead><tr><th>Deporte</th><th class="num">Partidos evaluados</th><th class="num">Acierto del favorito</th><th class="num">Brier modelo</th><th class="num">Brier mercado</th><th class="num">Peso del modelo</th></tr></thead><tbody>
     ${Object.keys(st.weights).map((s) => { const x = L[s]; return `<tr><td>${D.SPORT_ICON[s]} ${D.SPORT_NAME[s]}</td><td class="num">${x?.n || 0}</td><td class="num">${pct(x?.hitRate)}</td><td class="num">${x ? x.bm.toFixed(3) : '—'}</td><td class="num">${x?.bk != null ? x.bk.toFixed(3) : '—'}</td><td class="num"><b>${pct(st.weights[s])}</b></td></tr>`; }).join('')}
@@ -1219,6 +1220,86 @@ function knowledgeSection() {
         <div class="kv mt"><span>Resultado total registrado</span><b class="${prof >= 0 ? 'up' : 'down'}">${signed(prof)}</b></div>` : '<div class="empty">Aún no hay apuestas liquidadas en la base de datos.</div>'}
       <div class="note mt">Cada apuesta liquidada se guarda para siempre en <span class="kbd">data/apuestas.jsonl</span> de tu PC (momio, probabilidades, mercado, sharps y resultado). La IA y el bot la usan para aprender.</div></div>
   </div>`;
+}
+
+// ---------- Reporte de aprendizaje (apuestas sombra) ----------
+// Explica cómo decide el bot, qué pensó en cada apuesta sombra (su modelo vs. el mercado) y qué ha aprendido
+// de los resultados. Todo se calcula con tus datos y se actualiza solo conforme se califican más apuestas.
+function learningReport() {
+  const st = B.getState();
+  const DEF = B.DEFAULT_STATE().weights;
+  const sum = (arr, f) => arr.reduce((x, y) => x + (f(y) || 0), 0);
+  const P = (x) => (x == null ? '—' : Math.round(x * 100) + '%');
+  // Lo que pensó en cada apuesta: guardado en la sombra (desde v2.3) o, para las anteriores, en su predicción del partido.
+  const rows = st.shadow.filter((s) => s.status === 'won' || s.status === 'lost').map((s) => {
+    const pr = st.predictions[s.eventId];
+    return { ...s, pM: s.pModel ?? pr?.model?.[s.pick] ?? null, pK: s.pMarket ?? pr?.market?.[s.pick] ?? null, won: s.status === 'won' };
+  });
+  const head = '<div class="section-title">Reporte de aprendizaje <small>Qué pensó el bot, por qué eligió y qué aprendió de los resultados</small></div>';
+  const how = `<div class="widget glass"><h3>Cómo decide una apuesta</h3>
+    <ol class="steps">
+      <li><b>Su modelo</b> calcula una probabilidad propia: Poisson y xG en fútbol, fuerza ofensiva/defensiva en NFL/NBA/MLB, ranking en tenis y Elo por mapa en eSports. Sin datos propios usa 50% y no le da peso.</li>
+      <li><b>El mercado</b> dice la suya: precios con dinero real de Polymarket y Kalshi, o el momio de las casas sin su margen.</li>
+      <li><b>Mezcla las dos</b> con un peso por deporte que va ajustando (fútbol ${P(st.weights.soccer)}, NFL ${P(st.weights.football)}, tenis ${P(st.weights.tennis)}, eSports ${P(st.weights.esports)} para su modelo; el resto es mercado). Si casi coinciden, se queda con el mercado; si discrepan mucho, limita cuánto puede alejarse.</li>
+      <li><b>Valor:</b> si probabilidad × momio − 1 supera el mínimo (${P(st.settings.minEV)}, y más alto entre más alto el momio), la registra como apuesta sombra: 1 unidad, sin tocar tu banca.</li>
+      <li><b>Califica:</b> al terminar el partido la cuenta como ganada o perdida y actualiza segmentos, pesos y calibración.</li>
+    </ol></div>`;
+  if (!rows.length) return head + how + '<div class="widget glass mt empty">Todavía no hay apuestas sombra calificadas. En cuanto terminen los partidos, aquí aparece lo que aprendió.</div>';
+
+  const n = rows.length, wins = rows.filter((r) => r.won).length, expB = sum(rows, (r) => r.p), prof = sum(rows, (r) => r.profit);
+  const both = rows.filter((r) => r.pM != null && r.pK != null);
+  const wB = both.filter((r) => r.won).length, eM = sum(both, (r) => r.pM), eK = sum(both, (r) => r.pK);
+  const gaps = [['Poco (menos de 10 pts)', -9, 0.10], ['Medio (10 a 20 pts)', 0.10, 0.20], ['Grande (20 pts o más)', 0.20, 9]].map(([l, lo, hi]) => {
+    const g = both.filter((r) => r.pM - r.pK >= lo && r.pM - r.pK < hi);
+    return { l, n: g.length, w: g.filter((r) => r.won).length, eK: sum(g, (r) => r.pK), eM: sum(g, (r) => r.pM), roi: g.length ? sum(g, (r) => r.profit) / g.length : null };
+  });
+  const dog = rows.filter((r) => r.odds >= 2), fav = rows.filter((r) => r.odds < 2);
+  const L = B.learningStats(), cal = B.calibration();
+
+  // Conclusiones escritas a partir de los datos.
+  const C = [];
+  const diff = wins - expB;
+  C.push(`De <b>${n}</b> apuestas sombra calificadas ganó <b>${wins}</b>; según sus probabilidades esperaba <b>${expB.toFixed(1)}</b>. ${Math.abs(diff) < Math.max(1.5, Math.sqrt(expB) * 0.8) ? 'Está dentro de lo normal: sus probabilidades se comportan como dijo.' : diff < 0 ? 'Ganó menos de lo que esperaba: fue <b>optimista</b> con sus elecciones.' : 'Ganó más de lo que esperaba: fue algo <b>pesimista</b>.'} Resultado: ${prof >= 0 ? '+' : ''}${prof.toFixed(1)} unidades (ROI ${pct(prof / n, 1)}).`);
+  if (both.length >= 8) {
+    const errM = Math.abs(wB - eM), errK = Math.abs(wB - eK);
+    C.push(`Comparando opiniones en ${both.length} apuestas: su <b>modelo</b> solo esperaba <b>${eM.toFixed(1)}</b> victorias, el <b>mercado</b> <b>${eK.toFixed(1)}</b> y pasaron <b>${wB}</b>. ${errK <= errM ? 'El mercado acertó más que su modelo: por eso el bot le da más peso al mercado y su modelo solo "inclina" la balanza.' : 'Su modelo acertó más que el mercado en estas apuestas: buena señal, pero hace falta más muestra para confiar.'}`);
+  }
+  const big = gaps[2];
+  if (big.n >= 3) C.push(`Con <b>desacuerdos grandes</b> (su modelo 20 puntos o más arriba del mercado) ganó ${big.w} de ${big.n} (el mercado esperaba ${big.eK.toFixed(1)}). ${big.w <= big.eK ? 'Aprendizaje: un desacuerdo tan grande casi siempre es información que su modelo no tiene (lesiones, alineaciones, cansancio o falta de datos), no una ganga.' : 'Hasta ahora esos desacuerdos le han funcionado, pero son pocos casos.'}`);
+  const mid = gaps[1];
+  if (mid.n >= 5 && mid.roi > 0) C.push(`Su zona más rentable fueron los <b>desacuerdos medios</b> (10 a 20 pts): ${mid.w} de ${mid.n}, ROI ${pct(mid.roi)}.`);
+  if (dog.length >= 5 && fav.length >= 3) C.push(`Por momio: con <b>underdogs</b> (momio 2.00 o más) ganó ${dog.filter((r) => r.won).length} de ${dog.length} (ROI ${pct(sum(dog, (r) => r.profit) / dog.length)}); con <b>favoritos</b> ${fav.filter((r) => r.won).length} de ${fav.length} (ROI ${pct(sum(fav, (r) => r.profit) / fav.length)}). Encuentra valor sobre todo en underdogs porque ahí el mercado se equivoca más seguido, pero también es donde más varía el resultado.`);
+  for (const [sp, x] of Object.entries(L)) {
+    if (!x.nm || x.nm < 5 || x.bk == null) continue;
+    const better = x.bk < x.bm - 0.01 ? 'el mercado fue más preciso' : x.bm < x.bk - 0.01 ? 'su modelo fue más preciso' : 'su modelo y el mercado quedaron parejos';
+    const w0 = DEF[sp], w1 = st.weights[sp];
+    C.push(`${D.SPORT_ICON[sp] || ''} <b>${esc(D.SPORT_NAME[sp] || sp)}</b> (${x.n} partidos): ${better} (Brier modelo ${x.bm.toFixed(3)} vs mercado ${x.bk.toFixed(3)}; menor es mejor). ${Math.abs(w1 - w0) >= 0.005 ? `Ajustó el peso de su modelo de ${P(w0)} a <b>${P(w1)}</b>.` : x.nm < 15 ? `Con 15 partidos ajustará el peso (lleva ${x.nm}).` : 'Mantiene el peso.'}`);
+  }
+  const off = cal.bins.filter((b) => b.n >= 10 && Math.abs(b.avgP - b.freq) >= 0.08);
+  for (const b of off.slice(0, 3)) C.push(`Calibración: cuando dice cerca de <b>${P(b.avgP)}</b>, en realidad pasó <b>${P(b.freq)}</b> (${b.n} casos): ${b.freq < b.avgP ? 'ahí exagera las probabilidades' : 'ahí se queda corto'}.`);
+  const segs = Object.values(B.segmentStats()).filter((o) => o.n >= 5).sort((a, b) => b.roi - a.roi);
+  if (segs.length) {
+    const best = segs[0], worst = segs[segs.length - 1];
+    const nm = (o) => `${D.SPORT_NAME[o.sport] || o.sport} · ${o.market} · momio ${o.bucket}`;
+    if (best.roi > 0) C.push(`Mejor segmento hasta ahora: <b>${esc(nm(best))}</b> (${best.wins} de ${best.n}, ROI ${pct(best.roi)}).`);
+    if (worst !== best && worst.roi < 0) C.push(`Peor segmento: <b>${esc(nm(worst))}</b> (${worst.wins} de ${worst.n}, ROI ${pct(worst.roi)}). Con 30 resultados, si sigue perdiendo más de 5%, el piloto automático lo bloquea.`);
+  }
+  const blind = rows.filter((r) => r.sport === 'esports' && r.pM === 0.5).length;
+  if (blind) C.push(`En ${blind} apuesta${blind > 1 ? 's' : ''} de eSports su modelo aún no tenía datos de los equipos (50%) y se guió por el mercado: su Elo por mapa mejora con cada serie que observa.`);
+  if (n < 100) C.push(`<span class="note">Ojo: ${n} resultados es una muestra pequeña. Un par de underdogs que ganan o pierden cambian mucho el ROI; las conclusiones se vuelven firmes a partir de unas 100 apuestas por segmento.</span>`);
+
+  const recent = [...rows].sort((a, b) => new Date(b.eventDate) - new Date(a.eventDate)).slice(0, 15);
+  const why = (r) => (r.pM == null || r.pK == null ? `Estimó ${P(r.p)}; a momio ${dec(r.odds)} el EV era ${pct(r.ev, 1)}.`
+    : `Su modelo veía ${P(r.pM)}${r.pM === 0.5 && r.sport === 'esports' ? ' (sin datos)' : ''} y el mercado ${P(r.pK)}; al mezclar quedó en ${P(r.p)}. A momio ${dec(r.odds)} eso es EV ${pct(r.ev, 1)}.`);
+  const table = `<div class="table-wrap"><table class="t"><thead><tr><th>Partido</th><th>Elección</th><th class="num">Modelo</th><th class="num">Mercado</th><th class="num">Bot</th><th class="num">Momio</th><th>Por qué</th><th>Resultado</th></tr></thead><tbody>
+    ${recent.map((r) => `<tr><td>${D.SPORT_ICON[r.sport] || ''} ${esc(r.name)}<div class="note">${new Date(r.eventDate).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}</div></td><td><b>${esc(r.label)}</b></td><td class="num">${P(r.pM)}</td><td class="num">${P(r.pK)}</td><td class="num"><b>${P(r.p)}</b></td><td class="num">${dec(r.odds)}</td><td class="note">${why(r)}</td><td>${r.won ? `<span class="tag value">✅ +${(r.odds - 1).toFixed(2)} u</span>` : '<span class="tag live">❌ −1 u</span>'}</td></tr>`).join('')}
+  </tbody></table></div>`;
+  const gapTable = `<table class="t"><thead><tr><th>Modelo arriba del mercado</th><th class="num">Apuestas</th><th class="num">Ganadas</th><th class="num">Esperaba el mercado</th><th class="num">Esperaba su modelo</th><th class="num">ROI</th></tr></thead><tbody>
+    ${gaps.filter((g) => g.n).map((g) => `<tr><td>${g.l}</td><td class="num">${g.n}</td><td class="num"><b>${g.w}</b></td><td class="num">${g.eK.toFixed(1)}</td><td class="num">${g.eM.toFixed(1)}</td><td class="num ${g.roi >= 0 ? 'up' : 'down'}">${pct(g.roi)}</td></tr>`).join('')}</tbody></table>`;
+  return `${head}${how}
+  <div class="widget glass mt report-concl"><h3>Qué ha aprendido</h3><ul class="report-list">${C.map((c) => `<li>${c}</li>`).join('')}</ul></div>
+  ${both.length ? `<div class="widget glass mt"><h3>¿Le conviene creerle a su modelo cuando discrepa del mercado?</h3>${gapTable}<div class="note mt">"Esperaba" = suma de probabilidades: las victorias que debieron salir si esa opinión fuera la correcta. La más cercana a "Ganadas" es la que acertó.</div></div>` : ''}
+  <div class="widget glass mt"><h3>Qué pensó en cada apuesta · últimas ${recent.length}</h3>${table}</div>`;
 }
 
 // Aprendizaje sin IA: resultados de las apuestas sombra por segmento.

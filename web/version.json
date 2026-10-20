@@ -1,8 +1,11 @@
 {
-  "version": "2.2.0",
-  "date": "2026-10-18",
+  "version": "2.3.0",
+  "date": "2026-10-19",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Tema oscuro más oscuro y descansado para la vista: fondo casi negro, manchas de color tenues y azules suaves (botones y pestañas con un azul apagado)",
+    "Banca → Reporte de aprendizaje: cómo decide el bot, qué ha aprendido de las apuestas sombra (conclusiones escritas con tus datos) y qué pensó en cada una: su modelo vs. el mercado, la mezcla y el EV",
+    "Cada apuesta sombra guarda lo que opinaban su modelo y el mercado, y el peso que usó, para explicar mejor sus decisiones",
     "Fútbol con 365Scores (Liga MX, Champions, Premier, LaLiga, Serie A y Ligue 1): xG por remate, xG del partido y estadísticas avanzadas (xG a puerta, grandes ocasiones, pases clave, asistencias esperadas)",
     "📈 Gráficas: flujo de xG acumulado minuto a minuto con los goles marcados, y xPoints (puntos que merecía cada equipo según su xG)",
     "Forma xG de cada equipo: promedio de sus últimos partidos oficiales (xG a favor, en contra y diferencia)",

@@ -367,6 +367,8 @@ export function recordShadow(ev, sel) {
     eventId: ev.id, leagueId: ev.leagueId, sport: ev.sport, eventDate: ev.date, name: ev.name,
     market: sel.market, pick: sel.pick, line: sel.line ?? null, label: sel.label,
     odds: sel.odds, p: sel.p, ev: sel.ev, seg: segKey(ev.sport, sel.market, sel.odds), t: Date.now(), status: 'pending',
+    // Qué pensó: su modelo, el mercado (Polymarket/Kalshi/casas) y el peso que le dio a su modelo en ese deporte.
+    pModel: sel.pModel ?? null, pMarket: sel.pMarket ?? null, w: state.weights[ev.sport] ?? null, src: sel.oddsSource || null,
   });
   if (state.shadow.length > 4000) state.shadow = state.shadow.slice(-4000);
   return true;
