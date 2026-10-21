@@ -1277,7 +1277,8 @@ function modelSection() {
     return `<tr><td>${esc(x.name || id)}</td><td class="num">${x.matches}</td><td class="num">${x.trained ? `${esc(x.from || '')} → ${esc(x.to || '')}` : '<span class="note">faltan partidos</span>'}</td>
       <td class="num">${r ? r.n : '—'}</td><td class="num">${r ? n3(r.logLoss) : '—'}</td><td class="num">${r ? pct(r.accuracy) : '—'}</td>
       <td class="num">${r?.marketBrier != null ? `${n3(r.brier)} vs ${n3(r.marketBrier)}` : '<span class="note">sin momios</span>'}</td>
-      <td class="num">${r?.bets ? `${r.bets} · ${pct(r.roi, 1)}` : '—'}</td><td class="num">${r?.clv != null ? pct(r.clv, 1) : '—'}</td></tr>`;
+      <td class="num">${r?.bets ? `${r.bets} · ${pct(r.roi, 1)}` : '—'}</td><td class="num">${r?.clv != null ? pct(r.clv, 1) : '—'}</td>
+      <td class="num">${x.blend ? `<b>${pct(x.blend.w)}</b><div class="note">vs ${esc(x.blend.ref)}</div>` : '<span class="note">sin momios</span>'}</td></tr>`;
   }).join('');
   const rel = g?.relRaw?.length > 1 ? lineChart('py-calib', {
     series: [
@@ -1289,7 +1290,10 @@ function modelSection() {
   const verdict = !t ? 'Todavía no hay suficientes partidos para el backtesting.'
     : `Probado en <b>${t.raw.n}</b> partidos que el modelo no vio (desde ${esc(t.from)}): acierta al favorito el <b>${pct(t.raw.accuracy)}</b> con error (log loss) de <b>${n3(t.raw.logLoss)}</b>; adivinar al azar daría 1.099. `
       + (t.raw.marketBrier != null ? (t.raw.brier < t.raw.marketBrier ? 'Fue <b>más preciso que el momio de cierre</b> en esos partidos.' : 'El <b>momio de cierre fue más preciso</b>: por eso el bot mezcla su modelo con el mercado.') : 'Para compararlo contra el momio de cierre y medir CLV, sube los archivos de football-data (abajo).')
-      + (info._calUsed ? ' La calibración isotónica mejoró el error y se está usando.' : ' Ya sale bien calibrado: la calibración isotónica no lo mejoró, así que no se usa.');
+      + (info._calUsed ? ' La calibración isotónica mejoró el error y se está usando.' : ' Ya sale bien calibrado: la calibración isotónica no lo mejoró, así que no se usa.')
+      + (() => { const zero = ligas.filter(([, x]) => x.blend && x.blend.w === 0).map(([, x]) => x.name); const some = ligas.filter(([, x]) => x.blend && x.blend.w > 0).map(([, x]) => `${x.name} ${pct(x.blend.w)}`);
+          return (zero.length ? `<br><br><b>Lo que aprendió del backtesting:</b> en ${esc(zero.join(', '))} el momio ya incluye todo lo que el modelo sabe por resultados: darle peso empeora la precisión y produce apuestas con CLV negativo. Ahí el bot se guía por el mercado y solo apuesta si una casa paga más que el precio justo.` : '')
+            + (some.length ? ` Peso que sí le conviene al modelo: ${esc(some.join(', '))}.` : ''); })();
   const links = (m.links || []).map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.split('/').slice(-2).join('/'))}</a>`).join(' · ');
   const data = Object.values(m.data || {}).reduce((a, x) => a + x.matches, 0);
   return `${head}
@@ -1307,7 +1311,7 @@ function modelSection() {
       ${S.cfg.local ? '<label class="btn small mt" style="display:inline-block">📤 Subir archivos CSV<input type="file" id="py-upload" accept=".csv,text/csv" multiple hidden></label><div class="note" id="py-upload-msg"></div>' : '<div class="note mt">Súbelos desde la PC.</div>'}
       <div class="note mt">Partidos con momio de cierre: ${Object.values(m.data || {}).reduce((a, x) => a + (x.withClose || 0), 0).toLocaleString('es-MX')} · con apertura: ${Object.values(m.data || {}).reduce((a, x) => a + (x.withOpen || 0), 0).toLocaleString('es-MX')}</div></div>
   </div>
-  <div class="widget glass mt"><h3>Backtesting por liga (partidos que el modelo no vio)</h3><div class="table-wrap"><table class="t"><thead><tr><th>Liga</th><th class="num">Partidos</th><th class="num">Datos</th><th class="num">Probados</th><th class="num">Log loss</th><th class="num">Acierto</th><th class="num">Brier modelo vs cierre</th><th class="num">Apuestas · ROI</th><th class="num">CLV</th></tr></thead><tbody>${rows}</tbody></table></div>
+  <div class="widget glass mt"><h3>Backtesting por liga (partidos que el modelo no vio)</h3><div class="table-wrap"><table class="t"><thead><tr><th>Liga</th><th class="num">Partidos</th><th class="num">Datos</th><th class="num">Probados</th><th class="num">Log loss</th><th class="num">Acierto</th><th class="num">Brier modelo vs cierre</th><th class="num">Apuestas · ROI</th><th class="num">CLV</th><th class="num">Peso del modelo</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="note mt">Log loss y Brier: menor es mejor. "Apuestas" simula apostar cuando el modelo ve valor (EV ≥ 3%) al momio disponible; solo aparece con momios históricos.</div></div>`;
 }
 

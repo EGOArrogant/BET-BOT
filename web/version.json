@@ -1,8 +1,11 @@
 {
-  "version": "2.6.0",
+  "version": "2.6.1",
   "date": "2026-10-20",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "El bot aprende del backtesting cuánto peso darle a su modelo en cada liga frente al momio: Premier 10%, LaLiga, Serie A, Ligue 1 y Liga MX 0% (ahí se guía por el mercado)",
+    "Nombres de equipos unificados entre football-data, openfootball y ESPN; la base histórica fusiona duplicados sola",
+    "Columna \"Peso del modelo\" y conclusiones del backtesting en Banca",
     "Fútbol con modelo entrenado en temporadas pasadas (Dixon-Coles) para Premier, LaLiga, Serie A, Ligue 1, Liga MX y Champions; se mezcla con el modelo de la app",
     "Backtesting sin trampa: cada partido se predice solo con lo que se sabía antes; resultados por liga en Banca",
     "Calibración isotónica que solo se usa si mejora en partidos que el modelo no vio",

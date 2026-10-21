@@ -240,6 +240,26 @@ def reliability(preds, cal=None, bins=10):
     return [{"p": a[0] / a[2], "freq": a[1] / a[2], "n": a[2]} for a in acc if a[2] >= 15]
 
 
+def best_blend(preds):
+    """¿Cuánto peso le conviene al modelo frente al mercado? Se prueba mezclarlo con el momio (apertura si
+    hay; si no, cierre) en pasos de 5% y se queda con el que menos se equivoca (log loss) en el backtesting.
+    Si el mejor es 0%, el mercado ya sabe todo lo que el modelo sabe y el bot se guía por el mercado."""
+    rows = []
+    for pr in preds:
+        ref = no_vig(*pr["open"]) if all(pr["open"]) else no_vig(*pr["close"]) if all(pr["close"]) else None
+        if ref:
+            rows.append((pr["p"], ref, pr["res"]))
+    if len(rows) < 300:
+        return None
+    res = []
+    for w in [i / 20 for i in range(0, 11)]:
+        ll = sum(-math.log(max(1e-9, w * p[r] + (1 - w) * m[r])) for p, m, r in rows) / len(rows)
+        res.append((ll, w))
+    best_ll, best_w = min(res)
+    return {"w": best_w, "n": len(rows), "ref": "apertura" if all(preds[0]["open"]) else "cierre",
+            "llMarket": round(res[0][0], 4), "llBest": round(best_ll, 4), "curve": [{"w": w, "ll": round(ll, 4)} for ll, w in res]}
+
+
 # ---------- entrenamiento completo ----------
 class Modelos:
     def __init__(self, data_dir: Path, hist: Historico):
@@ -293,9 +313,10 @@ class Modelos:
                 by_league[liga] = preds
                 all_preds += preds
                 fits[liga] = fit(rows, today)
+                blend = best_blend(preds)
                 info[liga] = {"name": LEAGUES[liga], "matches": len(rows), "trained": True, "teams": len(fits[liga].teams),
                               "from": rows[0][0][:10], "to": rows[-1][0][:10], "rho": round(fits[liga].rho, 3),
-                              "home": round(math.exp(fits[liga].home), 3), "raw": metrics(preds)}
+                              "home": round(math.exp(fits[liga].home), 3), "raw": metrics(preds), "blend": blend}
             # Calibración medida sin trampa: se ajusta con la mitad MÁS VIEJA de las predicciones y se evalúa en la
             # mitad más reciente (que no vio). La que usa el bot después se ajusta con todas.
             def make_cal(ps):
@@ -346,4 +367,6 @@ class Modelos:
         c = apply_cal(self.cal, p)
         return {"lh": round(p["lh"], 4), "la": round(p["la"], 4), "home": round(c["home"], 4), "draw": round(c["draw"], 4),
                 "away": round(c["away"], 4), "over25": round(p["over25"], 4), "raw": {k: round(p[k], 4) for k in ("home", "draw", "away")},
-                "teams": [h, a], "calibrated": bool(self.cal)}
+                "teams": [h, a], "calibrated": bool(self.cal),
+                # Peso máximo que el backtesting le da al modelo en esta liga frente al mercado (None = sin momios para medirlo).
+                "maxW": (self.info.get(liga, {}).get("blend") or {}).get("w")}

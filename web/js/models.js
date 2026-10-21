@@ -305,7 +305,10 @@ const LEAGUE_WEIGHT = { 'uefa.champions': 0.4 };
 
 export function selections(ev, model, settings, weights) {
   // Si el modelo no tiene datos propios de estos equipos, no opina: la probabilidad es 100% la del mercado.
-  const w = model.known ? (weights?.[ev.sport] ?? settings.modelWeight ?? 0.35) * (LEAGUE_WEIGHT[ev.leagueId] ?? 1) : 0;
+  let w = model.known ? (weights?.[ev.sport] ?? settings.modelWeight ?? 0.35) * (LEAGUE_WEIGHT[ev.leagueId] ?? 1) : 0;
+  // Fútbol con modelo entrenado: el backtesting contra el momio dice cuánto peso le conviene al modelo en esta
+  // liga. Si el mercado ya sabe todo (peso 0%), el bot se guía por el mercado y no inventa "valor".
+  if (ev.sport === 'soccer' && ev.pyModel?.maxW != null) w = Math.min(w, ev.pyModel.maxW);
   const out = [];
   const isLive = ev.state === 'in';
   const probs = isLive && model.live ? model.live : model.pre;

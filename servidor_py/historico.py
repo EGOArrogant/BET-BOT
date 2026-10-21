@@ -46,11 +46,20 @@ ALIASES = {
     "inter": "internazionale", "inter milan": "internazionale", "milan": "ac milan", "roma": "as roma", "verona": "hellas verona",
     "paris sg": "paris saint germain", "psg": "paris saint germain", "st etienne": "saint etienne", "marseille": "olympique marseille",
     "lyon": "olympique lyonnais", "olympique lyon": "olympique lyonnais",
+    # Nombres largos o con prefijo de una fuente → nombre corto (football-data, openfootball y ESPN coinciden).
+    "coventry city": "coventry", "hull city": "hull", "espanyol barcelona": "espanyol", "rayo vallecano madrid": "rayo vallecano",
+    "real betis balompie": "real betis", "real oviedo": "oviedo", "real racing santander": "santander", "racing santander": "santander",
+    "real valladolid": "valladolid", "coruna": "deportivo la coruna", "internazionale milano": "internazionale",
+    "stade brestois": "brest", "racing lens": "lens", "stade reims": "reims", "stade rennais": "rennes", "strasbourg alsace": "strasbourg",
+    "clermont foot": "clermont", "olympique lyonnais": "olympique lyonnais", "paris": "paris fc",
+    "atlas guadalajara": "atlas", "guadalajara chivas": "chivas", "gallos blancos": "queretaro",
     "america": "club america", "guadalajara": "chivas", "cd guadalajara": "chivas", "uanl tigres": "tigres", "tigres uanl": "tigres",
     "unam pumas": "pumas unam", "pumas": "pumas unam", "atl san luis": "atletico san luis", "san luis": "atletico san luis",
     "queretaro": "queretaro", "mazatlan fc": "mazatlan", "fc juarez": "juarez", "club tijuana": "tijuana", "xolos": "tijuana",
 }
-DROP = r"\b(fc|cf|afc|sc|ac|ssc|as|cd|club|calcio|de|del|la|futbol|football|deportivo|rcd|ud|sd|1907|1909|1913|1899|1904)\b"
+# Prefijos y sufijos que no distinguen al equipo (RC Celta, US Lecce, Stade Rennais 1901, Lille OSC...).
+DROP = r"\b(fc|cf|afc|sc|ac|ssc|as|cd|club|calcio|de|del|la|futbol|football|rcd|ud|sd|rc|ca|ss|us|bc|cfc|acf|sco|osc|ogc|hsc|aj|es|ssd|sm|\d+)\b"
+NORM_VERSION = "3"
 
 
 def norm_team(name: str) -> str:
@@ -94,6 +103,44 @@ class Historico:
             CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
             """
         )
+        r = self.renormalize()
+        if not r.get("skipped"):
+            print(f"Base histórica reorganizada: {r['before']} → {r['after']} partidos (duplicados entre fuentes fusionados)")
+
+    def renormalize(self) -> dict:
+        """Vuelve a unificar los nombres de todos los partidos guardados y fusiona los duplicados
+        (mismo partido con nombres o fecha ±2 días distintos entre fuentes), conservando los momios."""
+        if self.meta("norm_version") == NORM_VERSION:
+            return {"skipped": True}
+        with self.lock:
+            rows = self.db.execute("SELECT liga, fecha, local, visita, gl, gv, fuente, ah, ad, aa, ch, cd, ca FROM partidos ORDER BY liga, fecha").fetchall()
+            merged: dict = {}
+            order = []
+            for r in rows:
+                liga, fecha, lo, vi = r[0], r[1], norm_team(r[2]), norm_team(r[3])
+                d = dt.date.fromisoformat(fecha[:10])
+                key = None
+                for delta in (0, -1, 1, -2, 2):
+                    k = (liga, (d + dt.timedelta(days=delta)).isoformat(), lo, vi)
+                    if k in merged and (merged[k][4], merged[k][5]) == (r[4], r[5]):
+                        key = k
+                        break
+                if key is None:
+                    key = (liga, d.isoformat(), lo, vi)
+                    merged[key] = [liga, d.isoformat(), lo, vi, r[4], r[5], r[6], *r[7:]]
+                    order.append(key)
+                else:
+                    cur = merged[key]
+                    for i in range(7, 13):  # completa momios que falten
+                        if cur[i] is None and r[i] is not None:
+                            cur[i] = r[i]
+            self.db.execute("BEGIN")
+            self.db.execute("DELETE FROM partidos")
+            self.db.executemany("INSERT INTO partidos (liga, fecha, local, visita, gl, gv, fuente, ah, ad, aa, ch, cd, ca) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                [merged[k] for k in order])
+            self.db.execute("COMMIT")
+            self.meta("norm_version", NORM_VERSION)
+        return {"before": len(rows), "after": len(order)}
 
     def meta(self, k: str, v: str | None = None):
         if v is None:
@@ -108,6 +155,15 @@ class Historico:
             for r in rows:
                 key = (r["liga"], r["fecha"][:10], norm_team(r["local"]), norm_team(r["visita"]))
                 if not all(key) or r.get("gl") is None or r.get("gv") is None:
+                    continue
+                try:
+                    d0 = dt.date.fromisoformat(key[1])
+                    near = self.db.execute("SELECT fecha FROM partidos WHERE liga=? AND local=? AND visita=? AND gl=? AND gv=? AND fecha BETWEEN ? AND ?",
+                                           (key[0], key[2], key[3], int(r["gl"]), int(r["gv"]), (d0 - dt.timedelta(days=2)).isoformat(),
+                                            (d0 + dt.timedelta(days=2)).isoformat())).fetchone()
+                    if near:
+                        key = (key[0], near[0], key[2], key[3])
+                except ValueError:
                     continue
                 cur = self.db.execute(
                     "INSERT INTO partidos (liga, fecha, local, visita, gl, gv, fuente, ah, ad, aa, ch, cd, ca) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
