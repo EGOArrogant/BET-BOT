@@ -75,6 +75,8 @@ Hay una versión nueva del servidor escrita en Python (carpeta `servidor_py`). H
 3. Abre **`iniciar-python.bat`**. La primera vez prepara Python (tarda un minuto).
 4. Para volver al servidor de siempre: cierra esa ventana y abre `iniciar.bat`.
 
+**Bot 24/7:** con el servidor de Python, el bot (escaneo, liquidación, práctica y piloto automático) sigue operando aunque cierres la app: el servidor lo corre en una ventana invisible de Edge y lo reinicia si falla. Se activa o pausa en Inicio → Piloto automático → "Bot 24/7 en tu PC". La PC debe estar encendida con la ventana negra abierta.
+
 ## Problemas comunes
 
 | Problema | Solución |

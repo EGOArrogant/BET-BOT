@@ -36,8 +36,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 sys.path.insert(0, str(Path(__file__).parent))
 from db import Store  # noqa: E402
 import push as pushmod  # noqa: E402
+import bot as botmod  # noqa: E402
 
-SERVER_VERSION = "3.0.0"
+SERVER_VERSION = "3.1.0"
 ENGINE = "python"
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -84,6 +85,7 @@ inflight: dict[str, asyncio.Future] = {}
 last_liquipedia = 0.0
 lp_lock = asyncio.Lock()
 LOCAL_IPS: set[str] = {"127.0.0.1", "::1"}
+runner: botmod.BotRunner | None = None
 
 
 # ---------- utilidades ----------
@@ -251,8 +253,37 @@ async def lifespan(_app):
         LOCAL_IPS.add(ip)
     print(f"BetBot MX (Python) corriendo en http://localhost:{ARGS.port}  (cierra esta ventana para detenerlo)")
     print("Acceso desde el celular: " + ("ACTIVO (escanea el QR en Más → Celular)" if _app.state.lan else "desactivado (ejecuta habilitar-telefono.bat una vez)"))
+    watchdog = asyncio.create_task(bot_watchdog())
     yield
+    watchdog.cancel()
+    if runner:
+        await asyncio.to_thread(runner.stop)
+        runner.set_awake(False)
     await http.aclose()
+
+
+async def bot_watchdog():
+    """Bot 24/7: abre el motor y lo vigila cada 20 s (lo reinicia si se cae o deja de responder)."""
+    global runner
+    cfg = read_env()
+    runner = botmod.BotRunner(DATA, ARGS.port)
+    runner.enabled = cfg.get("BOT_24_7", "1") != "0"
+    runner.keep_awake = cfg.get("BOT_NO_DORMIR", "1") != "0"
+    killed = await asyncio.to_thread(botmod.kill_orphans, runner.profile)
+    if killed:
+        runner.note(f"Se cerraron {killed} procesos de un motor anterior")
+    if not runner.browser:
+        print("Bot 24/7: no se encontró Microsoft Edge ni Google Chrome; el bot solo opera con la app abierta.")
+    elif runner.enabled:
+        print("Bot 24/7: ACTIVO (opera aunque no tengas la app abierta)")
+    await asyncio.sleep(2)  # que el servidor ya esté escuchando antes de abrir el motor
+    while True:
+        try:
+            runner.set_awake(runner.enabled and runner.keep_awake and bool(runner.browser))
+            await asyncio.to_thread(runner.tick)
+        except Exception as e:  # nunca debe tumbar al servidor
+            print(f"Bot 24/7: {e}")
+        await asyncio.sleep(20)
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -655,8 +686,16 @@ async def update_apply(req: Request):
     if z.status_code != 200:
         raise RuntimeError(f"No se pudo descargar la actualizacion (HTTP {z.status_code})")
     changed = await asyncio.to_thread(apply_update, z.content)
-    # Si cambió el servidor, se reinicia solo para usar el código nuevo.
+    # Si cambió el servidor, se instalan las librerías nuevas que pida y se reinicia solo para usar el código nuevo.
     if changed:
+        req_file = ROOT / "servidor_py" / "requirements.txt"
+        if req_file.exists():
+            r = await asyncio.to_thread(subprocess.run, [sys.executable, "-m", "pip", "install", "-q", "--disable-pip-version-check", "-r", str(req_file)],
+                                        capture_output=True, text=True, timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if r.returncode != 0:
+                # Sin las librerías el servidor nuevo no arrancaría: se queda el actual y se avisa.
+                return j({"ok": False, "error": "No se pudieron instalar las librerías nuevas de Python. Revisa tu internet y vuelve a intentar.",
+                          "detail": (r.stderr or r.stdout)[-500:]}, 500)
         schedule_restart()
     return j({"ok": True, "version": str(manifest.get("version", "")), "serverChanged": changed, "restarting": changed})
 
@@ -672,10 +711,57 @@ async def restart(req: Request):
 def schedule_restart() -> None:
     def go():
         print("Reiniciando BetBot MX con la versión nueva...")
+        if runner:
+            runner.stop()
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         subprocess.Popen([sys.executable, str(ROOT / "servidor_py" / "server.py"), "--port", str(ARGS.port), "--wait", "2"], cwd=str(ROOT), creationflags=flags)
         os._exit(0)
     asyncio.get_running_loop().call_later(0.8, go)
+
+
+# ---------- bot 24/7 ----------
+@app.get("/api/bot/status")
+async def bot_status():
+    if not runner:
+        return j({"enabled": False, "running": False, "healthy": False, "browser": False})
+    return j(runner.status())
+
+
+@app.post("/api/bot/heartbeat")
+async def bot_heartbeat(req: Request):
+    if (deny := pc_only(req)):
+        return deny
+    if not runner:
+        return j({"stop": True})
+    # Si responde "stop", esa pestaña no es la autorizada (o el bot 24/7 está pausado) y se apaga sola.
+    return j(runner.heartbeat(await body_json(req)))
+
+
+@app.post("/api/bot/config")
+async def bot_config(req: Request):
+    if (deny := pc_only(req)):
+        return deny
+    b = await body_json(req)
+    vals = {}
+    if b.get("enabled") is not None:
+        runner.enabled = bool(b["enabled"])
+        vals["BOT_24_7"] = "1" if runner.enabled else "0"
+    if b.get("keepAwake") is not None:
+        runner.keep_awake = bool(b["keepAwake"])
+        vals["BOT_NO_DORMIR"] = "1" if runner.keep_awake else "0"
+    if vals:
+        set_env_values(vals)
+    runner.set_awake(runner.enabled and runner.keep_awake and bool(runner.browser))
+    await asyncio.to_thread(runner.tick)
+    return j(runner.status())
+
+
+@app.post("/api/bot/restart")
+async def bot_restart(req: Request):
+    if (deny := pc_only(req)):
+        return deny
+    await asyncio.to_thread(runner.start, "reinicio pedido desde la app")
+    return j(runner.status())
 
 
 # ---------- base de datos de apuestas liquidadas ----------

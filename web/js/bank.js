@@ -47,7 +47,12 @@ export const onConflict = (fn) => conflictListeners.add(fn);
 const emit = () => listeners.forEach((fn) => fn(state));
 
 // Identificador de este dispositivo: solo uno corre el piloto automático a la vez.
+// Bot 24/7: el servidor de la PC abre la app en una ventana invisible con ?bot=servidor.
+// Ese "dispositivo" siempre se llama 'servidor' y tiene prioridad para operar el piloto automático.
+export const isServerBot = (() => { try { return new URLSearchParams(location.search).get('bot') === 'servidor'; } catch { return false; } })();
+export const SERVER_DEVICE = 'servidor';
 export const deviceId = (() => {
+  if (isServerBot) return SERVER_DEVICE;
   try {
     let id = localStorage.getItem('betbot-device');
     if (!id) { id = 'd' + Math.random().toString(36).slice(2, 10); localStorage.setItem('betbot-device', id); }
@@ -59,6 +64,10 @@ export const deviceId = (() => {
 const STALE_MS = 5 * 60_000;
 export function claimDevice() {
   const s = state.settings;
+  if (isServerBot && s.autopilotDevice !== SERVER_DEVICE) {
+    s.autopilotDevice = SERVER_DEVICE;
+    log('🖥️ El bot 24/7 de tu PC tomó el control: opera aunque no tengas la app abierta');
+  }
   const stale = !s.autopilotSeen || Date.now() - s.autopilotSeen > STALE_MS;
   if (!s.autopilotDevice || (s.autopilotDevice !== deviceId && stale)) {
     s.autopilotDevice = deviceId;

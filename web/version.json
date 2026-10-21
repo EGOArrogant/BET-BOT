@@ -1,8 +1,12 @@
 {
-  "version": "2.4.0",
+  "version": "2.5.0",
   "date": "2026-10-20",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Bot 24/7 (servidor en Python): escaneo, liquidación, modo práctica y piloto automático corren en tu PC aunque no tengas la app abierta",
+    "El servidor vigila el motor del bot: si se cae o deja de responder lo reinicia solo, y lo renueva cada 6 h",
+    "Opción para que la PC no se duerma mientras el bot opera (la pantalla sí se puede apagar)",
+    "Estado del bot 24/7 en el panel del piloto automático: último escaneo, reinicios y botón para activarlo o pausarlo",
     "Nueva pestaña 👥 Jugadores en NBA, NFL, MLB y fútbol: jugadores clave con promedios de temporada (NBA) o líderes por posición (NFL), si juegan o están de baja, y otras bajas y dudas",
     "Contexto del partido: días de descanso y back-to-back, récord de local y de visita, serie entre ellos y pronóstico de ESPN",
     "Béisbol (MLB y LMB): abridores probables con ERA, WHIP y sus últimas 3 aperturas, y alineación confirmada cuando sale (MLB Stats API)",

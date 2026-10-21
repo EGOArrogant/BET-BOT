@@ -199,6 +199,7 @@ function handleAIError(e) {
 
 // ---------- piloto automático ----------
 async function autopilot() {
+  if (S.halted) return; // motor 24/7 duplicado o pausado: nunca apuesta
   const s = B.getState().settings;
   if (!s.autopilot && !s.practiceMode) return;
   if (!B.claimDevice()) return; // otro dispositivo activo está operando el bot
@@ -422,7 +423,7 @@ function renderChrome() {
   }).join('')}</div>` : '');
   $('#sidebar').innerHTML = `<div class="brand"><span class="brand-icon">⚽</span><div><b>BetBot MX</b><div class="note">v${esc(S.version?.version || '—')}</div></div></div>
     <nav>${NAV.map(([id, label]) => `<button class="side-item ${S.tab === id ? 'active' : ''}" data-tab="${id}">${icon(id)}<span>${label}</span>${badge(id)}</button>${['soccer', 'sports', 'combat', 'esports'].includes(id) ? sub(id) : ''}`).join('')}</nav>
-    <div class="side-foot"><div class="note">Banca disponible</div><b>${money(st.bankroll)}</b><div class="note">${st.settings.autopilot ? (B.isAutopilotHere() ? '🟢 Bot activo aquí' : '🟢 Bot activo en otro dispositivo') : '⚪ Bot en pausa'}</div></div>`;
+    <div class="side-foot"><div class="note">Banca disponible</div><b>${money(st.bankroll)}</b><div class="note">${S.botStatus?.healthy ? '🖥️ Bot 24/7 activo en tu PC' : st.settings.autopilot ? (B.isAutopilotHere() ? '🟢 Bot activo aquí' : '🟢 Bot activo en otro dispositivo') : '⚪ Bot en pausa'}</div></div>`;
   $('#tabbar').innerHTML = MOBILE_NAV.map((id) => `<button data-tab="${id}" class="${S.tab === id || (id === 'more' && !MOBILE_NAV.includes(S.tab)) ? 'active' : ''}">${icon(id)}${NAV.find((n) => n[0] === id)[1]}${badge(id)}</button>`).join('');
   $('#page-title').textContent = TITLES[S.tab][0];
   $('#page-sub').textContent = TITLES[S.tab][1];
@@ -466,6 +467,7 @@ function serverBanner() {
 const typingInView = () => { const a = document.activeElement; return a && $('#view').contains(a) && /INPUT|TEXTAREA|SELECT/.test(a.tagName); };
 
 function render() {
+  if (B.isServerBot) return; // motor del bot 24/7: no hay nadie mirando, no se dibuja nada
   renderChrome();
   if (typingInView()) { S.pendingRender = true; return; }
   S.pendingRender = false;
@@ -502,13 +504,31 @@ function kpis() {
   </div>`;
 }
 
+// Estado del bot 24/7 (el motor que corre el servidor de la PC sin necesitar la app abierta).
+function bot247Row() {
+  const b = S.botStatus;
+  if (!b || (b.browser === false && !b.enabled)) return '';
+  const ago = (t) => { if (!t) return '—'; const sec = Math.round((Date.now() - t) / 1000); return sec < 90 ? `hace ${sec} s` : `hace ${Math.round(sec / 60)} min`; };
+  const st = !b.enabled ? 'Desactivado: el bot solo opera con la app abierta'
+    : b.browser === false ? 'No se encontró Microsoft Edge ni Chrome en la PC'
+    : b.healthy ? `Activo · último escaneo ${ago(b.beat?.lastUpdate)} · opera aunque cierres la app${b.keepAwake ? ' · la PC no se duerme' : ''}`
+    : b.running ? 'Arrancando el motor…' : `Detenido${b.lastReason ? ': ' + esc(b.lastReason) : ''} (se reinicia solo)`;
+  const sw = (id, on) => `<label class="switch"><input type="checkbox" id="${id}" ${on ? 'checked' : ''} ${S.cfg.local ? '' : 'disabled'}><span></span></label>`;
+  return `<div class="row"><div class="icon-sq" style="background:var(--teal)">🖥️</div><div class="grow"><b>Bot 24/7 en tu PC</b><div class="meta">${st}${b.restarts ? ` · ${b.restarts} reinicio${b.restarts > 1 ? 's' : ''} automático${b.restarts > 1 ? 's' : ''}` : ''}</div></div>${sw('sw-bot247', b.enabled)}</div>
+    ${b.enabled && S.cfg.local ? `<div class="row"><div class="icon-sq" style="background:var(--fill-2)">🌙</div><div class="grow"><b>Que la PC no se duerma</b><div class="meta">Mientras el bot 24/7 esté activo (la pantalla sí se puede apagar)</div></div>${sw('sw-keepawake', b.keepAwake)}</div>` : ''}`;
+}
+async function refreshBotStatus() {
+  try { S.botStatus = await (await fetch('/api/bot/status', { cache: 'no-store' })).json(); } catch { S.botStatus = null; }
+}
+
 function botWidget() {
   const st = B.getState(), s = st.settings;
   const sw = (id, on, dis = false) => `<label class="switch"><input type="checkbox" id="${id}" ${on ? 'checked' : ''} ${dis ? 'disabled' : ''}><span></span></label>`;
   return `<div class="widget glass">
     <h3>Piloto automático</h3>
     <div class="list" style="background:var(--fill)">
-      <div class="row"><div class="icon-sq" style="background:var(--green-fill)">🤖</div><div class="grow"><b>Apostar automáticamente</b><div class="meta">Solo apuestas con EV ≥ ${pct(s.minEV)} · máx. ${s.maxBetsPerDay} al día${s.autopilot ? (B.isAutopilotHere() ? ' · corre en este dispositivo (mantén esta pestaña abierta)' : ' · corre en otro dispositivo') : ''}</div></div>${s.autopilot && !B.isAutopilotHere() ? '<button class="btn small" data-takeover>Correr aquí</button>' : ''}${sw('sw-auto', s.autopilot)}</div>
+      <div class="row"><div class="icon-sq" style="background:var(--green-fill)">🤖</div><div class="grow"><b>Apostar automáticamente</b><div class="meta">Solo apuestas con EV ≥ ${pct(s.minEV)} · máx. ${s.maxBetsPerDay} al día${s.autopilot ? (s.autopilotDevice === B.SERVER_DEVICE ? ' · corre en el bot 24/7 de tu PC (no necesitas la app abierta)' : B.isAutopilotHere() ? ' · corre en este dispositivo (mantén esta pestaña abierta)' : ' · corre en otro dispositivo') : ''}</div></div>${s.autopilot && !B.isAutopilotHere() && !(s.autopilotDevice === B.SERVER_DEVICE && S.botStatus?.healthy) ? '<button class="btn small" data-takeover>Correr aquí</button>' : ''}${sw('sw-auto', s.autopilot)}</div>
+      ${bot247Row()}
       <div class="row"><div class="icon-sq" style="background:var(--purple)">✦</div><div class="grow"><b>Confirmar con IA</b><div class="meta">${aiReady() ? 'Claude revisa cada apuesta y busca noticias' : 'Agrega tu clave de Anthropic en Más → Ajustes'}</div></div>${sw('sw-ai', s.aiConfirm, !aiReady())}</div>
       <div class="row"><div class="icon-sq" style="background:var(--orange-fill)">🎓</div><div class="grow"><b>Modo práctica diaria</b><div class="meta">Al menos ${s.practicePerDay} apuestas ficticias al día de $${s.practiceStake ?? 10} con las mejores opciones disponibles, para aprender desde hoy · hoy: ${st.bets.filter((b) => b.source === 'práctica' && new Date(b.placedAt).toDateString() === new Date().toDateString()).length}/${s.practicePerDay}</div></div>${sw('sw-practice', s.practiceMode)}</div>
       <div class="row"><div class="icon-sq" style="background:var(--blue)">⏱</div><div class="grow"><b>Escaneo</b><div class="meta">Cada ${s.scanMinutes} min · última ${S.lastUpdate ? new Date(S.lastUpdate).toLocaleTimeString('es-MX') : '—'}</div></div><button class="btn small" id="scan-now">Escanear</button></div>
@@ -2784,6 +2804,13 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('change', (e) => {
   const t = e.target;
+  if (t.id === 'sw-bot247' || t.id === 'sw-keepawake') {
+    const body = t.id === 'sw-bot247' ? { enabled: t.checked } : { keepAwake: t.checked };
+    fetch('/api/bot/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then((r) => r.json()).then((x) => { S.botStatus = x; toast(t.id === 'sw-bot247' ? (t.checked ? '🖥️ Bot 24/7 activado' : 'Bot 24/7 desactivado') : (t.checked ? '🌙 La PC no se dormirá mientras opere' : 'La PC puede dormirse')); render(); })
+      .catch(() => toast('No se pudo cambiar (solo desde la PC)'));
+    return;
+  }
   if (t.id === 'sw-auto') {
     B.updateSettings(t.checked ? { autopilot: true, autopilotDevice: B.deviceId } : { autopilot: false });
     B.log(t.checked ? 'Piloto automático activado' : 'Piloto automático en pausa');
@@ -2864,8 +2891,33 @@ async function liveTick() {
   B.onConflict(() => { toast('↻ Se sincronizaron cambios hechos desde otro dispositivo'); render(); });
   render();
   window.__bbStarted = true; // la app ya se pintó: el aviso de error de arranque ya no aplica
+  // Bot 24/7: el motor invisible avisa al servidor que sigue vivo (si deja de latir, el servidor lo reinicia).
+  if (B.isServerBot) {
+    window.addEventListener('error', (e) => { S.lastError = String(e.message || 'error').slice(0, 200); });
+    window.addEventListener('unhandledrejection', (e) => { S.lastError = String(e.reason?.message || e.reason || 'error').slice(0, 200); });
+    // Cada pestaña del motor tiene su identificación: el servidor solo deja operar a una.
+    const pageId = 'p' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    let fails = 0;
+    const halt = () => { S.halted = true; location.replace('about:blank'); }; // deja de operar por completo
+    const beat = () => {
+      const st = B.getState(), s = st.settings, today = new Date().toDateString();
+      fetch('/api/bot/heartbeat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        page: pageId, t: Date.now(), lastUpdate: S.lastUpdate || null, scanning: !!S.scanning, autopilot: !!s.autopilot, practice: !!s.practiceMode,
+        practiceToday: st.bets.filter((b) => b.source === 'práctica' && new Date(b.placedAt).toDateString() === today).length,
+        betsToday: st.bets.filter((b) => b.source !== 'manual' && new Date(b.placedAt).toDateString() === today).length,
+        pending: B.pendingBets().length, events: allEvents().length, live: allEvents().filter((e) => e.state === 'in').length,
+        aiPaused: aiPaused() ? S.aiPause.msg : null, version: S.version?.version || null, error: S.lastError || null,
+      }) }).then((r) => r.json()).then((x) => { fails = 0; if (x && x.stop) halt(); })
+        .catch(() => { if (++fails >= 3) halt(); }); // sin servidor 90 s: se apaga (el servidor lo vuelve a abrir al regresar)
+    };
+    beat();
+    setInterval(beat, 30_000);
+  } else {
+    refreshBotStatus().then(() => render());
+    setInterval(async () => { await refreshBotStatus(); if (S.tab === 'home') render(); }, 30_000);
+  }
   // App del iPhone: conexión con la PC, deslizar para actualizar, actualizar al volver, guía de instalación.
-  try { initShell({ refresh: async () => { await refreshAll(); }, isLocal: !!S.cfg.local }); } catch (e) { console.warn('appshell', e); }
+  if (!B.isServerBot) try { initShell({ refresh: async () => { await refreshAll(); }, isLocal: !!S.cfg.local }); } catch (e) { console.warn('appshell', e); }
   // Datos en tiempo real: escaneo completo cada minuto (si tenías el valor anterior de 3 min, se ajusta a 1).
   if (!B.getState().settings.rt13) B.updateSettings({ scanMinutes: Math.min(B.getState().settings.scanMinutes, 1), rt13: true });
   if (!B.getState().settings.w13) {
