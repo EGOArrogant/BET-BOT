@@ -214,6 +214,7 @@ export function placeBet({ ev, sel, stake, odds, oddsMx = null, source = 'manual
     p: sel.p, pModel: sel.pModel, pMarket: sel.pMarket, ev: sel.p * finalOdds - 1,
     stake, source, reasoning, placedAt: Date.now(), status: 'pending', payout: 0, closingOdds: null, book,
     minOdds: sel.minOdds ?? null, placedReal: false, oddsSource: sel.oddsSource || null,
+    lineValue: sel.lineValue || null, // casa que pagaba más que el precio justo (Pinnacle sin margen)
   };
   // Cada momio capturado por casa sirve para aprender qué casa paga mejor.
   for (const [b, q] of Object.entries(quotes)) if (q) recordQuote(state, { book: b, sport: ev.sport, market: sel.market, odds: q, refOdds: odds });

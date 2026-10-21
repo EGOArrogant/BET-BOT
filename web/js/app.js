@@ -71,8 +71,8 @@ function analyze(ev, table, winProb) {
   // Ajuste prudente por bajas y descanso (solo antes del partido y si ya se cargó el contexto).
   if (ev.state === 'pre' && S.ctx) applyContext(model, S.ctx.get(key(ev)));
   // Con precio de Polymarket/Kalshi hay referencia de mercado aunque el modelo no tenga datos propios.
-  model.tradable = model.known || !!ev.pm;
-  const sels = M.selections(ev, model, st.settings, st.weights);
+  model.tradable = model.known || !!ev.pm || !!ev.lineValue?.some((x) => x.group === 'mx');
+  const sels = M.applyLineValue(ev, M.selections(ev, model, st.settings, st.weights), st.settings);
   const golden = M.goldenOpportunities(ev, model, sels);
   B.recordPrediction(ev, model, sels);
   // Aprendizaje sin IA: registra lo que el bot habría apostado (sin tocar la banca).
@@ -96,10 +96,57 @@ async function refreshLeague(lg) {
   const pmk = await getPredictionMarkets(lg).catch(() => []);
   for (const ev of events) { ev.pm = matchPrediction(ev, pmk); attachX365(ev); }
   await attachPyModel(lg, events); // modelo entrenado con temporadas pasadas (servidor de Python)
+  for (const e of events) attachLineValue(e); // casas que pagan más que el precio justo (Pinnacle sin margen)
   S.events.set(lg.id, events);
   S.tables.set(lg.id, table);
   for (const k of [...S.analysis.keys()]) if (k.startsWith(lg.id + ':')) S.analysis.delete(k);
   for (const ev of events) analyze(ev, table, S.summaries.get(key(ev))?.winProb);
+}
+
+// ---------- momio por encima del precio justo (servidor de Python) ----------
+// El servidor consulta The Odds API con presupuesto de créditos y compara cada casa contra Pinnacle sin margen.
+// Aquí solo se leen sus resultados (no gasta créditos) y se pegan a cada partido.
+S.lv = { spots: [], status: null, t: 0 };
+async function loadLineValues(force = false) {
+  if (S.cfg?.engine !== 'python' || (!force && Date.now() - S.lv.t < 5 * 60_000)) return;
+  try { const r = await (await fetch('/api/precios/valor', { cache: 'no-store' })).json(); S.lv = { spots: r.spots || [], status: r.status, t: Date.now() }; } catch {}
+}
+function attachLineValue(ev) {
+  if (ev.state === 'post' || !S.lv.spots.length) { ev.lineValue = null; return; }
+  const t = new Date(ev.date).getTime();
+  const mine = S.lv.spots.filter((x) => x.leagueId === ev.leagueId && Math.abs(new Date(x.commence).getTime() - t) < 12 * 3600_000
+    && nameScore(ev.home.name, x.home) > 0 && nameScore(ev.away.name, x.away) > 0);
+  ev.lineValue = mine.length ? mine : null;
+}
+function lvTag(a) {
+  const mx = (a.ev.lineValue || []).filter((x) => x.group === 'mx');
+  if (!mx.length || a.ev.state !== 'pre') return '';
+  const b = mx.sort((x, y) => y.ev - x.ev)[0];
+  const who = b.pick === 'draw' ? 'Empate' : a.ev[b.pick].abbr || a.ev[b.pick].name;
+  return `<span class="tag lv-tag" title="${esc(b.bookName)} paga ${dec(b.price)} y el precio justo (Pinnacle sin margen) es ${dec(b.fairOdds)}">💲 ${esc(who)} ${esc(b.bookName)} ${dec(b.price)} · EV ${pct(b.ev, 1)}</span>`;
+}
+function lineValueSection() {
+  if (S.cfg?.engine !== 'python') return '';
+  const st = S.lv.status, c = st?.credits;
+  const spots = S.lv.spots.filter((x) => new Date(x.commence) > Date.now()).slice(0, 10);
+  const credits = c ? `${c.remaining != null ? `${Math.round(c.remaining)} créditos restantes · ` : ''}hoy ${Math.round(c.spentToday)} de ${c.daily} · regiones ${esc(c.regions)}` : '';
+  const head = `<div class="section-title">Momio por encima del precio justo <small>Casas que pagan más que Pinnacle sin margen</small></div>`;
+  const warn = c?.error ? `<div class="warn">${esc(c.error)}. Se reanuda solo en unas horas; el plan gratuito da 500 créditos al mes.</div>` : '';
+  if (!spots.length) return head + `<div class="widget glass empty">${warn}${st?.quotes ? 'Ninguna casa paga hoy más que el precio justo en los partidos revisados. Es lo normal: cuando aparezca, se verá aquí.' : 'Todavía no hay momios revisados.'}<div class="note mt">${credits}</div></div>`;
+  const row = (x) => {
+    const a = [...S.analysis.values()].find((y) => y.ev.lineValue?.includes(x));
+    const who = x.pick === 'draw' ? 'Empate' : x.pick === 'home' ? x.home : x.away;
+    const when = new Date(x.commence).toLocaleString('es-MX', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    return `<div class="match" ${a ? `data-open="${key(a.ev)}"` : ''} data-key="lv-${esc(x.id)}-${x.pick}">
+      <div class="when">${esc(when)}</div>
+      <div><b>${esc(who)}</b> <span class="note">· ${esc(x.home)} vs ${esc(x.away)}</span>
+        <div class="note">${esc(x.bookName)} ${x.group === 'mx' ? '<span class="tag">en México</span>' : '<span class="tag">internacional · sin permiso SEGOB</span>'} · Pinnacle ${dec(x.pinnacle)} · justo ${dec(x.fairOdds)}</div></div>
+      <div class="odds"><div class="odd value"><div class="k">${esc(x.bookName)}</div><div class="o">${dec(x.price)}</div><div class="p">EV ${pct(x.ev, 1)}</div></div>
+        ${a ? `<button class="odd" data-slip="${key(a.ev)}|${x.pick}"><div class="k">Boleto</div><div class="o">+</div></button>` : ''}</div>
+    </div>`;
+  };
+  return head + `${warn}<div class="league-block glass" data-key="lv-block">${spots.map(row).join('')}</div>
+    <div class="note mt">Precio justo = momio de Pinnacle sin su margen. Si una casa paga más, la apuesta tiene valor esperado positivo. El piloto y el modo práctica usan solo las casas que operan en México. ${credits}</div>`;
 }
 
 // ---------- modelo entrenado (servidor de Python, fase 3) ----------
@@ -137,6 +184,7 @@ async function refreshAll() {
   S.scanning = true;
   $('#last-update').textContent = 'Actualizando…';
   await B.pullState(); // cambios hechos desde otro dispositivo
+  await loadLineValues();
   const firstLoad = !S.lastUpdate;
   // En la primera carga se pinta conforme llega cada liga (Liquipedia puede tardar ~30 s por su límite).
   await Promise.allSettled(D.LEAGUES.map((lg) => refreshLeague(lg).then(() => { if (firstLoad) render(); }).catch((e) => console.warn(lg.id, e))));
@@ -198,7 +246,7 @@ B.onSettled((b, ev) => {
     odds: b.odds, oddsMx: b.oddsMx, refOdds: b.refOdds, closingOdds: b.closingOdds, book: b.book,
     p: b.p, pModel: b.pModel, pMarket: b.pMarket, ev: b.ev, stake: b.stake, payout: b.payout,
     status: b.status, finalScore: b.finalScore || null, settledBy: b.settledBy || 'auto',
-    sharpSide: smart?.best || null, profit: b.status === 'void' ? 0 : Math.round(((b.payout || 0) - b.stake) * 100) / 100,
+    sharpSide: smart?.best || null, lineValue: !!b.lineValue, lineBook: b.lineValue?.book || null, fairOdds: b.lineValue?.fairOdds || null, profit: b.status === 'void' ? 0 : Math.round(((b.payout || 0) - b.stake) * 100) / 100,
   });
   pushFeed({ kind: b.status, k: ev ? ev.leagueId + ':' + ev.id : null, text: `${b.status === 'won' ? '✅ Ganaste' : b.status === 'lost' ? '❌ Perdiste' : '↩️ Anulada'}: ${b.label} · ${b.eventName}${b.finalScore ? ' · ' + b.finalScore : ''}${b.status === 'won' ? ` · +${money(b.payout - b.stake)}` : b.status === 'lost' ? ` · −${money(b.stake)}` : ''}` });
   flushLedger();
@@ -302,7 +350,9 @@ async function valueBets() {
   for (const c of cands) {
     if (room <= 0) break;
     let sel = c.sel, stake = B.suggestStake(sel.p, sel.odds), source = 'modelo';
-    let reasoning = `EV ${pct(sel.ev, 1)} · modelo ${pct(sel.pModel)} vs mercado ${pct(sel.pMarket)}`;
+    let reasoning = sel.lineValue
+      ? `${sel.lineValue.bookName} paga ${dec(sel.lineValue.price)} y el precio justo (Pinnacle sin margen) es ${dec(sel.lineValue.fairOdds)} · EV ${pct(sel.ev, 1)}`
+      : `EV ${pct(sel.ev, 1)} · modelo ${pct(sel.pModel)} vs mercado ${pct(sel.pMarket)}`;
     if (s.aiConfirm && aiReady()) {
       // IA en pausa (sin saldo, clave inválida, límite...): no se apuesta sin su confirmación ni se reintenta en cada escaneo.
       if (aiPaused()) break;
@@ -600,6 +650,7 @@ function viewHome() {
   ${live.length ? liveByCategory(live) : `<div class="widget glass empty">No hay partidos en vivo en este momento.</div>`}
   <div class="section-title">Oportunidades de Oro <small><a href="#" data-tab-link="gold">Ver todas</a></small></div>
   ${golds.length ? `<div class="grid opps">${golds.map(({ g, a }) => oppCard(g, a)).join('')}</div>` : `<div class="widget glass empty">Sin oportunidades de oro por ahora. El bot sigue buscando.</div>`}
+  ${lineValueSection()}
   <div class="section-title">Valor detectado <small>EV positivo con momio de referencia</small></div>
   ${values.length ? `<div class="league-block glass">${values.map(({ s, a }) => valueRow(s, a)).join('')}</div>` : `<div class="widget glass empty">Ninguna selección supera el EV mínimo ahora mismo. Así se ve un mercado eficiente: no apostar también es una decisión.</div>`}
   <div class="grid halves mt">
@@ -726,6 +777,7 @@ function tagsFor(a) {
     else if (ev.segment === 'Coestelar') t.push('<span class="tag seg-co">Coestelar</span>');
     if (ev.round) t.push(`<span class="tag div-tag" style="--h:${(divRank(ev.round) * 37) % 360}">${esc(ev.round)}</span>`);
     if (ev.rounds === 5 && !ev.titleFight) t.push('<span class="tag">5 rounds</span>');
+    t.push(lvTag(a));
     if (a.golden.length) t.push('<span class="tag gold">★ Oro</span>');
     const vv = a.sels.filter((s) => s.value);
     if (vv.length && ev.state === 'pre') t.push(`<span class="tag value">Valor ${pct(Math.max(...vv.map((s) => s.ev)), 1)}</span>`);
@@ -734,6 +786,7 @@ function tagsFor(a) {
     return t.join('');
   }
   t.push(marketTag(a), smartTag(a), sharpTag(a));
+  t.push(lvTag(a));
   if (a.golden.length) t.push('<span class="tag gold">★ Oro</span>');
   const v = a.sels.filter((s) => s.value);
   if (v.length && a.ev.state === 'pre') t.push(`<span class="tag value">Valor ${pct(Math.max(...v.map((s) => s.ev)), 1)}</span>`);
@@ -1257,6 +1310,7 @@ async function loadModelos(force = false) {
   if (S.modelosLoading || (!force && S.modelos && Date.now() - S.modelos.t < 60_000)) return;
   S.modelosLoading = true;
   try { S.modelos = { t: Date.now(), ...(await (await fetch('/api/modelos/estado', { cache: 'no-store' })).json()) }; } catch { S.modelos = { t: Date.now(), error: 'sin servidor de Python' }; }
+  try { S.lvClv = await (await fetch('/api/precios/clv', { cache: 'no-store' })).json(); } catch { S.lvClv = null; }
   S.modelosLoading = false;
   if (S.tab === 'bank') render();
 }
@@ -1302,6 +1356,9 @@ function modelSection() {
       <div class="kv mt"><span>Partidos en la base histórica</span><b>${data.toLocaleString('es-MX')}</b></div>
       <div class="kv"><span>Último entrenamiento</span><b>${m.busy ? 'entrenando…' : m.ageHours != null ? `hace ${m.ageHours < 1 ? Math.round(m.ageHours * 60) + ' min' : Math.round(m.ageHours) + ' h'}` : '—'}</b></div>
       <div class="kv"><span>Tu CLV real (${led.length} apuestas con cierre)</span><b class="${clv > 0 ? 'up' : clv < 0 ? 'down' : ''}">${clv != null ? pct(clv, 1) + ` · le ganas al cierre ${pct(beat)}` : '—'}</b></div>
+      ${(() => { const c = S.lvClv; if (!c) return ''; const f = (x) => (x?.n ? `${pct(x.clv, 1)} · gana al cierre ${pct(x.beat)} (${x.n})` : 'sin apuestas medidas aún');
+        return `<div class="kv"><span>CLV vs cierre de Pinnacle · precio justo</span><b class="${c.precioJusto?.clv > 0 ? 'up' : c.precioJusto?.clv < 0 ? 'down' : ''}">${f(c.precioJusto)}</b></div>
+          <div class="kv"><span>CLV vs cierre de Pinnacle · otras apuestas</span><b class="${c.otras?.clv > 0 ? 'up' : c.otras?.clv < 0 ? 'down' : ''}">${f(c.otras)}</b></div>`; })()}
       ${m.error ? `<div class="warn mt">${esc(m.error)}</div>` : ''}
       ${S.cfg.local ? `<div class="flex mt"><button class="btn small" data-pytrain ${m.busy ? 'disabled' : ''}>${m.busy ? 'Entrenando…' : '↻ Re-entrenar ahora'}</button></div>` : ''}
       <div class="note mt">Se re-entrena solo cada 24 h con los partidos nuevos que ve el bot. El CLV positivo (conseguir mejor momio que el de cierre) es la mejor señal de que el bot encuentra valor de verdad, aunque una racha de resultados diga otra cosa.</div></div>

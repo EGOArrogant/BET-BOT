@@ -39,8 +39,9 @@ import push as pushmod  # noqa: E402
 import bot as botmod  # noqa: E402
 from historico import FD_LINKS, Historico  # noqa: E402
 from modelos import Modelos  # noqa: E402
+from precios import Precios  # noqa: E402
 
-SERVER_VERSION = "3.2.0"
+SERVER_VERSION = "3.3.0"
 ENGINE = "python"
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -90,6 +91,7 @@ LOCAL_IPS: set[str] = {"127.0.0.1", "::1"}
 runner: botmod.BotRunner | None = None
 hist: Historico
 modelos: Modelos
+precios: Precios
 
 
 # ---------- utilidades ----------
@@ -259,13 +261,29 @@ async def lifespan(_app):
     print("Acceso desde el celular: " + ("ACTIVO (escanea el QR en Más → Celular)" if _app.state.lan else "desactivado (ejecuta habilitar-telefono.bat una vez)"))
     watchdog = asyncio.create_task(bot_watchdog())
     trainer = asyncio.create_task(models_loop())
+    hunter = asyncio.create_task(prices_loop())
     yield
     watchdog.cancel()
     trainer.cancel()
+    hunter.cancel()
     if runner:
         await asyncio.to_thread(runner.stop)
         runner.set_awake(False)
     await http.aclose()
+
+
+async def prices_loop():
+    """Cazar momios: cada 10 min revisa qué ligas tienen partidos cercanos y consulta momios con el presupuesto de créditos."""
+    await asyncio.sleep(30)
+    while True:
+        try:
+            if read_env().get("ODDS_API_KEY"):
+                r = await asyncio.to_thread(precios.tick)
+                if r.get("fetched"):
+                    print(f"Precio justo: momios actualizados de {', '.join(r['fetched'])}")
+        except Exception as e:
+            print(f"Precio justo: {e}")
+        await asyncio.sleep(600)
 
 
 async def models_loop():
@@ -393,10 +411,8 @@ async def odds(p: str = ""):
         return j({"error": "Falta ODDS_API_KEY"}, 401)
     if not p.startswith("sports/"):
         return j({"error": "ruta no permitida"}, 400)
-    sep = "&" if "?" in p else "?"
-    r = await http.get(f"https://api.the-odds-api.com/v4/{p}{sep}apiKey={cfg['ODDS_API_KEY']}", timeout=30)
-    extra = {"X-Requests-Remaining": r.headers["x-requests-remaining"]} if r.headers.get("x-requests-remaining") else {}
-    return Response(r.content, status_code=r.status_code, media_type="application/json; charset=utf-8", headers={"Cache-Control": "no-store", **extra})
+    status, content, extra = await asyncio.to_thread(precios.proxy, p)
+    return Response(content, status_code=status, media_type="application/json; charset=utf-8", headers={"Cache-Control": "no-store", **extra})
 
 
 # ---------- logos de Liquipedia y proxy de fuentes públicas ----------
@@ -785,6 +801,25 @@ async def bot_restart(req: Request):
     return j(runner.status())
 
 
+# ---------- momio por encima del precio justo ----------
+@app.get("/api/precios/valor")
+async def precios_valor():
+    return j({"spots": await asyncio.to_thread(precios.values), "status": precios.status()})
+
+
+@app.get("/api/precios/clv")
+async def precios_clv():
+    return j(await asyncio.to_thread(precios.clv, json.loads(store.ledger_all())))
+
+
+@app.post("/api/precios/actualizar")
+async def precios_actualizar(req: Request):
+    if (deny := pc_only(req)):
+        return deny
+    r = await asyncio.to_thread(precios.tick)
+    return j({**r, "status": precios.status()})
+
+
 # ---------- modelos entrenados (fase 3) ----------
 @app.get("/api/modelos/estado")
 async def modelos_estado():
@@ -893,6 +928,8 @@ def init() -> None:
     global hist, modelos
     hist = Historico(DATA)
     modelos = Modelos(DATA, hist)
+    global precios
+    precios = Precios(DATA, read_env, os.environ.get("BETBOT_ODDS_BASE") or "https://api.the-odds-api.com/v4")
     rep = store.sync_from_files()
     if rep["estado"] or rep["apuestas"] or rep["push"]:
         print(f"Datos importados de los archivos: estado={'sí' if rep['estado'] else 'sin cambios'}, apuestas nuevas={rep['apuestas']}, avisos={'sí' if rep['push'] else 'sin cambios'}")

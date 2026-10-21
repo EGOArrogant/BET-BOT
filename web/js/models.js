@@ -364,6 +364,24 @@ function pack(ev, settings, s) {
   };
 }
 
+// ---------- Momio por encima del precio justo ----------
+// El servidor compara casas contra Pinnacle sin margen (la casa más precisa). Si una casa que opera en México
+// paga más que ese precio justo, esa selección usa: probabilidad = la justa de Pinnacle y momio = el de esa casa.
+// Así el piloto automático y el modo práctica la ven como cualquier otra apuesta con valor.
+export function applyLineValue(ev, sels, settings) {
+  for (const spot of ev.lineValue || []) {
+    if (spot.group !== 'mx' || ev.state !== 'pre') continue; // solo casas que operan en México
+    const i = sels.findIndex((s) => (s.market === '1X2' || s.market === 'Ganador') && s.pick === spot.pick);
+    if (i < 0) continue;
+    const s = sels[i];
+    sels[i] = pack(ev, settings, {
+      ...s, p: spot.fairP, pMarket: spot.fairP, odds: spot.price, oddsSource: spot.bookName,
+      lineValue: { book: spot.book, bookName: spot.bookName, price: spot.price, fairOdds: spot.fairOdds, pinnacle: spot.pinnacle, ev: spot.ev },
+    });
+  }
+  return sels;
+}
+
 // ---------- Oportunidades de Oro ----------
 // 1) Underdog con valor (antes del partido): momio alto y EV positivo según modelo+mercado.
 // 2) Remontada posible (en vivo): el favorito previo va perdiendo pero el modelo aún le da opciones reales.

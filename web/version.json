@@ -1,8 +1,13 @@
 {
-  "version": "2.6.1",
-  "date": "2026-10-20",
+  "version": "2.7.0",
+  "date": "2026-10-21",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Momio por encima del precio justo: el servidor compara casas contra Pinnacle sin margen y marca cuando una paga de más (💲 en cada partido y sección en Inicio)",
+    "El piloto automático y el modo práctica usan esas apuestas (solo casas que operan en México) con la probabilidad justa de Pinnacle",
+    "CLV contra el cierre de Pinnacle en Banca: apuestas de precio justo vs. el resto",
+    "Créditos de The Odds API cuidados: caché compartida entre dispositivos (antes cada dispositivo gastaba por separado), presupuesto diario (ODDS_CREDITOS_MES) y pausa automática si se acaban",
+    "La lista de partidos próximos usa la consulta gratuita de The Odds API; solo se pagan momios de ligas con partidos cercanos",
     "El bot aprende del backtesting cuánto peso darle a su modelo en cada liga frente al momio: Premier 10%, LaLiga, Serie A, Ligue 1 y Liga MX 0% (ahí se guía por el mercado)",
     "Nombres de equipos unificados entre football-data, openfootball y ESPN; la base histórica fusiona duplicados sola",
     "Columna \"Peso del modelo\" y conclusiones del backtesting en Banca",
