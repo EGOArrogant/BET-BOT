@@ -8,6 +8,7 @@ import { updateElo, esportsTable, finishedEsports } from './esports.js';
 import { getPredictionMarkets, matchPrediction, nameScore, priceHistory } from './prediction.js';
 import * as SM from './smart.js';
 import { morph } from './morph.js';
+import { getContext, applyContext } from './context.js';
 import * as X from './s365.js';
 import { lineChart } from './charts.js';
 import { initShell, saveSnapshot, pushSupport, pushState, enablePush, disablePush, testPush, setPushPrefs, pushOnHere, isTailscale } from './appshell.js';
@@ -67,13 +68,15 @@ const allEvents = () => [...S.events.values()].flat();
 function analyze(ev, table, winProb) {
   const st = B.getState();
   const model = M.modelEvent(ev, table || new Map(), winProb);
+  // Ajuste prudente por bajas y descanso (solo antes del partido y si ya se cargó el contexto).
+  if (ev.state === 'pre' && S.ctx) applyContext(model, S.ctx.get(key(ev)));
   // Con precio de Polymarket/Kalshi hay referencia de mercado aunque el modelo no tenga datos propios.
   model.tradable = model.known || !!ev.pm;
   const sels = M.selections(ev, model, st.settings, st.weights);
   const golden = M.goldenOpportunities(ev, model, sels);
   B.recordPrediction(ev, model, sels);
   // Aprendizaje sin IA: registra lo que el bot habría apostado (sin tocar la banca).
-  if (ev.state === 'pre' && model.tradable) for (const s of sels) if (s.value) B.recordShadow(ev, s);
+  if (ev.state === 'pre' && model.tradable) for (const s of sels) if (s.value) B.recordShadow(ev, s, model.adj?.delta || 0);
   const a = { ev, model, sels, golden };
   S.analysis.set(key(ev), a);
   recordProb(a);
@@ -118,7 +121,8 @@ async function refreshAll() {
   await autopilot();
   try { await loadRelevantNews(); } catch {}
   scanX365().catch(() => {}); // xG de 365Scores: forma reciente de los equipos de los próximos partidos (segundo plano)
-  refreshSmart().then(() => { mapSmartToEvents(); scanEventSmart(); }); // top apostadores de Polymarket + dinero inteligente por partido (segundo plano)
+  refreshSmart().then(() => { mapSmartToEvents(); scanEventSmart(); });
+  scanContext(); // jugadores clave, bajas y descanso de los partidos de las próximas 36 h // top apostadores de Polymarket + dinero inteligente por partido (segundo plano)
   mapSmartToEvents();
   collectNotifications();
   detectChanges();
@@ -318,7 +322,17 @@ async function buildContext(a) {
     } : undefined,
     xg_365scores: (() => { const r = S.x365.get(key(a.ev)); if (!r) return undefined; const fm = (t) => t && { xg_a_favor_prom: t.for != null ? +t.for.toFixed(2) : null, xg_en_contra_prom: t.against != null ? +t.against.toFixed(2) : null, partidos: t.n, ultimos: t.series.map((s) => `vs ${s.opp}: ${s.for}-${s.against}`) };
       return { forma_local: fm(r.form?.home), forma_visitante: fm(r.form?.away), xg_partido: r.data?.xg || null, xpoints: r.data?.xg ? X.xPoints(r.data.xg.home, r.data.xg.away) : null, estadisticas: r.data?.stats?.slice(0, 20).map((s) => `: ${s.home ?? '-'} vs ${s.away ?? '-'}`) }; })(),
-    valor_plantilla_transfermarkt: a.ev.sport === 'soccer' ? await Promise.all([D.squadValue(a.ev.home.name), D.squadValue(a.ev.away.name)]).then(([h, w]) => (h || w ? { local: h && { club: h.name, valor: h.valueTxt, jugadores: h.squad }, visitante: w && { club: w.name, valor: w.valueTxt, jugadores: w.squad } } : null)).catch(() => null) : undefined,
+    contexto_previo: (() => {
+      const c = S.ctx.get(key(a.ev));
+      if (!c || c.none || !c.home) return null;
+      const side = (s) => ({
+        descanso_dias: c[s].rest?.days ?? null, back_to_back: c[s].rest ? c[s].rest.days <= 1 : null, record: c.records?.[s] || null,
+        jugadores_clave: (c[s].players || []).map((p) => `${p.name}${p.role ? ' (' + p.role + ')' : ''}: ${p.line}${p.status ? ' [' + p.status.text + ']' : ''}`),
+        bajas: (c[s].injuries || []).slice(0, 10).map((i) => `${i.name}: ${i.status?.text}${i.detail ? ' (' + i.detail + ')' : ''}`),
+        abridor: c[s].pitcher || null, alineacion_confirmada: c[s].lineup?.length ? c[s].lineup : null,
+      });
+      return { local: side('home'), visitante: side('away'), serie: c.series, pronostico_espn: c.predictor, ajuste_modelo: c.adj ? { cambio_prob_local: c.adj.delta, motivos: c.adj.list.map((x) => `${x.side === 'home' ? 'local' : 'visitante'}: ${x.text}`) } : null };
+    })(),    valor_plantilla_transfermarkt: a.ev.sport === 'soccer' ? await Promise.all([D.squadValue(a.ev.home.name), D.squadValue(a.ev.away.name)]).then(([h, w]) => (h || w ? { local: h && { club: h.name, valor: h.valueTxt, jugadores: h.squad }, visitante: w && { club: w.name, valor: w.valueTxt, jugadores: w.squad } } : null)).catch(() => null) : undefined,
     top_apostadores_polymarket: (() => {
       const agg = S.smart.byEvent.get(key(a.ev));
       return agg ? Object.fromEntries(Object.entries(agg).map(([side, s]) => [side, { cuantos: s.traders.length, usd: Math.round(s.usd), quienes: s.traders.map((t) => `${t.name} a ${t.price}`) }])) : null;
@@ -1285,7 +1299,16 @@ function learningReport() {
     if (best.roi > 0) C.push(`Mejor segmento hasta ahora: <b>${esc(nm(best))}</b> (${best.wins} de ${best.n}, ROI ${pct(best.roi)}).`);
     if (worst !== best && worst.roi < 0) C.push(`Peor segmento: <b>${esc(nm(worst))}</b> (${worst.wins} de ${worst.n}, ROI ${pct(worst.roi)}). Con 30 resultados, si sigue perdiendo más de 5%, el piloto automático lo bloquea.`);
   }
-  const blind = rows.filter((r) => r.sport === 'esports' && r.pM === 0.5).length;
+  // ¿Ayuda el ajuste por bajas y descanso? Se comparan las apuestas con ajuste contra las demás.
+  const withAdj = rows.filter((r) => r.adj), noAdj = rows.filter((r) => !r.adj && ['soccer', 'football', 'basketball', 'baseball'].includes(r.sport));
+  if (withAdj.length >= 3) {
+    const st2 = (g) => ({ n: g.length, w: g.filter((r) => r.won).length, e: sum(g, (r) => r.p), roi: g.length ? sum(g, (r) => r.profit) / g.length : null });
+    const A = st2(withAdj), N = st2(noAdj);
+    C.push(`Con <b>ajuste por bajas y descanso</b> (${A.n} apuestas) ganó ${A.w} y esperaba ${A.e.toFixed(1)}, ROI ${pct(A.roi)}${N.n ? `; sin ajuste (${N.n}) ganó ${N.w} y esperaba ${N.e.toFixed(1)}, ROI ${pct(N.roi)}` : ''}. ${A.n < 30 ? 'Aún son pocas para concluir.' : A.roi > (N.roi ?? -1) ? 'El ajuste está ayudando.' : 'El ajuste todavía no mejora los resultados.'}`);
+  } else {
+    const pend = st.shadow.filter((s) => s.status === 'pending' && s.adj).length;
+    if (pend) C.push(`El ajuste por bajas y descanso ya se registra en ${pend} apuesta${pend > 1 ? 's' : ''} pendiente${pend > 1 ? 's' : ''}; cuando se califiquen, aquí verás si mejora los resultados.`);
+  }  const blind = rows.filter((r) => r.sport === 'esports' && r.pM === 0.5).length;
   if (blind) C.push(`En ${blind} apuesta${blind > 1 ? 's' : ''} de eSports su modelo aún no tenía datos de los equipos (50%) y se guió por el mercado: su Elo por mapa mejora con cada serie que observa.`);
   if (n < 100) C.push(`<span class="note">Ojo: ${n} resultados es una muestra pequeña. Un par de underdogs que ganan o pierden cambian mucho el ROI; las conclusiones se vuelven firmes a partir de unas 100 apuestas por segmento.</span>`);
 
@@ -1528,7 +1551,7 @@ function renderSheet() {
     ? [['analysis', 'Análisis'], ['charts', '📈 Gráficas'], ['smart', '🧠 Dinero inteligente'], ['fighters', 'Peleadores'], ['markets', 'Mercados y momios'], ['experts', 'Especialistas'], ['ai', '✦ IA']]
     : ev.sport === 'esports'
     ? [['analysis', 'Análisis'], ['charts', '📈 Gráficas'], ['smart', '🧠 Dinero inteligente'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']]
-    : [['analysis', 'Análisis'], ['charts', '📈 Gráficas'], ['smart', '🧠 Dinero inteligente'], ['lineups', ev.sport === 'soccer' ? 'Alineaciones' : 'Plantilla'], ['stats', 'Estadísticas'], ['feed', 'Minuto a minuto'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']];
+    : [['analysis', 'Análisis'], ['charts', '📈 Gráficas'], ...(CTX_SPORTS.includes(ev.sport) ? [['players', '👥 Jugadores']] : []), ['smart', '🧠 Dinero inteligente'], ['lineups', ev.sport === 'soccer' ? 'Alineaciones' : 'Plantilla'], ['stats', 'Estadísticas'], ['feed', 'Minuto a minuto'], ['news', 'Noticias'], ['ai', '✦ IA'], ['odds', 'Momios']];
   paint($('#sheet-body'), sheetFresh, `<div class="scoreboard">${team(ev.home)}<div><div class="big">${esc(big)}</div><div class="st">${status}</div>${ev.sport === 'tennis' && ev.state !== 'pre' ? `<div class="note">${ev.home.linescores.join(' ')}<br>${ev.away.linescores.join(' ')}</div>` : ''}</div>${team(ev.away)}</div>
     ${ev.maps?.length ? `<div class="maps-strip">${ev.maps.map((m) => `<div class="map-chip ${m.status}${m.winner ? ' w-' + m.winner : ''}"><div class="note">Mapa ${m.n}${m.map ? ' · ' + esc(m.map) : ''}</div><b>${m.status === 'done' ? `${m.home}-${m.away}` : m.status === 'live' ? '<span class="dot live"></span> en juego' : '—'}</b></div>`).join('')}
       <div class="note maps-src">Mapas en tiempo real: ${esc(ev.liveSource || '')}</div></div>` : ''}
@@ -1558,6 +1581,7 @@ function sheetTab(a, sum) {
     case 'experts': return '<div id="experts-box">' + loading + '</div>';
     case 'smart': return tabEventSmart(a);
     case 'charts': return tabCharts(a, sum);
+    case 'players': return tabPlayers(a);
   }
   return '';
 }
@@ -1667,6 +1691,7 @@ function botConclusion(a) {
   if (marketFav) reasons.push(marketFav === best.pick ? 'el mercado coincide' : 'el mercado ve otro favorito');
   if (modelFav && ml[0].pModel != null) reasons.push(modelFav === best.pick ? 'su modelo coincide' : 'su modelo ve otro favorito');
   if (sharp) reasons.push(sharp === best.pick ? 'los sharps están del mismo lado' : 'los sharps están del otro lado');
+  if (a.model.adj?.delta) reasons.push(`ajustó su modelo por bajas o descanso (${a.model.adj.delta > 0 ? '+' : ''}${(a.model.adj.delta * 100).toFixed(1)} pts para ${ev.home.name})`);
   const value = ml.find((s) => s.value && ev.state === 'pre');
   if (value) reasons.push(`hay valor en ${value.pick === 'draw' ? 'el empate' : ev[value.pick].name} (EV ${pct(value.ev, 1)})`);
   const conf = best.p >= 0.65 && agree >= 2 ? 'Alta' : best.p >= 0.5 && agree >= 1 ? 'Media' : 'Baja';
@@ -1716,6 +1741,79 @@ function tabCharts(a, sum) {
     ${xgBlock(a)}
     <div class="widget mt chart-card"><h3>Comparativa del partido</h3>${stats}</div>
     ${advancedBlock(a)}`;
+}
+
+// ---------- Jugadores y contexto previo (ESPN y MLB Stats API) ----------
+// Jugadores clave con promedios, bajas y si juegan, descanso, récord de local/visita, serie entre ellos,
+// abridores y alineación confirmada. Se cargan en segundo plano para los partidos de las próximas 36 h
+// y al abrir un partido; con eso el modelo se ajusta por bajas y descanso (con tope).
+S.ctx = new Map();
+const CTX_SPORTS = ['soccer', 'football', 'basketball', 'baseball'];
+async function loadCtx(a, force = false) {
+  const ev = a.ev, k = key(ev), lg = D.leagueById(ev.leagueId);
+  if (!CTX_SPORTS.includes(ev.sport) || ev.state === 'post') return null;
+  const cur = S.ctx.get(k);
+  if (cur && (cur.busy || (!force && Date.now() - cur.t < 30 * 60_000))) return cur;
+  S.ctx.set(k, { ...(cur || {}), busy: true, t: Date.now() });
+  try {
+    const sum = S.summaries.get(k) && !S.summaries.get(k).error ? S.summaries.get(k) : await D.getSummary(lg, ev.id).catch(() => null);
+    const ctx = await getContext(lg, ev, sum);
+    S.ctx.set(k, ctx ? { ...ctx, busy: false } : { t: Date.now(), busy: false, none: true });
+    // Se recalcula el partido con el ajuste (si el partido sigue en la lista).
+    const now = (S.events.get(lg.id) || []).find((e) => e.id === ev.id);
+    if (now && now.state === 'pre') analyze(now, S.tables.get(lg.id), S.summaries.get(k)?.winProb);
+  } catch (e) { S.ctx.set(k, { t: Date.now(), busy: false, error: e.message }); }
+  return S.ctx.get(k);
+}
+let ctxBusy = false;
+async function scanContext() {
+  if (ctxBusy) return;
+  ctxBusy = true;
+  try {
+    const soon = Date.now() + 36 * 3600_000;
+    const list = allAnalyses().filter((a) => CTX_SPORTS.includes(a.ev.sport) && a.ev.state === 'pre' && new Date(a.ev.date).getTime() < soon)
+      .filter((a) => { const c = S.ctx.get(key(a.ev)); return !c || (!c.busy && Date.now() - c.t > 30 * 60_000); })
+      .slice(0, 10);
+    for (const a of list) await loadCtx(a);
+    if (list.length && ['home', 'soccer', 'sports'].includes(S.tab)) render();
+  } catch (e) { console.warn('contexto', e); }
+  ctxBusy = false;
+}
+
+function tabPlayers(a) {
+  const ev = a.ev, k = key(ev), c = S.ctx.get(k);
+  if (!c || (c.busy && !c.home)) { loadCtx(a).then(() => { if (S.open === k && S.sheetTab === 'players') renderSheet(); }); return '<div class="shimmer"></div><div class="shimmer"></div><div class="note">Buscando jugadores clave, bajas y descanso…</div>'; }
+  if (c.error && !c.home) return `<div class="warn">No se pudo cargar el contexto: ${esc(c.error)}</div>`;
+  if (c.none) return '<div class="empty">Sin datos de jugadores para este partido.</div>';
+  const nm = { home: ev.home.name, away: ev.away.name };
+  const rec = (s) => { const r = c.records?.[s] || {}; return [r.total ? `Total ${r.total}` : '', s === 'home' && r.home ? `De local ${r.home}` : '', s === 'away' && (r.road || r.away) ? `De visita ${r.road || r.away}` : ''].filter(Boolean).join(' · ') || '—'; };
+  const restTxt = (r) => (!r ? '—' : r.days <= 1 ? `<b class="down">${r.days} día · back-to-back</b>` : `${r.days} días${r.last7 >= 3 ? ` · ${r.last7} partidos en 7 días` : ''}`);
+  const stTag = (st) => (!st ? '<span class="tag value">Juega</span>' : st.miss >= 0.75 ? `<span class="tag live">${esc(st.text)}</span>` : st.miss >= 0.3 ? `<span class="tag gold">${esc(st.text)}</span>` : `<span class="tag">${esc(st.text)}</span>`);
+  const ctxRows = `<table class="t ctx-table"><thead><tr><th></th><th>${esc(nm.home)}</th><th>${esc(nm.away)}</th></tr></thead><tbody>
+    <tr><td>Descanso</td><td>${restTxt(c.home.rest)}</td><td>${restTxt(c.away.rest)}</td></tr>
+    <tr><td>Récord</td><td>${esc(rec('home'))}</td><td>${esc(rec('away'))}</td></tr>
+    ${ev.sport === 'baseball' ? `<tr><td>Abridor</td>${['home', 'away'].map((s) => { const p = c[s].pitcher; return `<td>${p ? `<b>${esc(p.name)}</b><div class="note">ERA ${p.era ?? '—'} · WHIP ${p.whip ?? '—'} · ${p.ip || 0} IP · ${p.k ?? 0} K${p.lastEra != null ? ` · últimas 3: ERA ${p.lastEra}` : ''}</div>` : '<span class="note">Sin anunciar</span>'}</td>`; }).join('')}</tr>` : ''}
+    <tr><td>Bajas</td><td>${c.home.injuries?.length || 0}</td><td>${c.away.injuries?.length || 0}</td></tr>
+  </tbody></table>
+  ${c.series?.length ? `<div class="note mt">Serie entre ellos: <b>${c.series.map(esc).join(' · ')}</b></div>` : ''}
+  ${c.predictor ? `<div class="note">Pronóstico de ESPN: ${esc(nm.home)} ${pct(c.predictor.home)} · ${esc(nm.away)} ${pct(c.predictor.away)}</div>` : ''}`;
+  const adj = c.adj?.list?.length ? `<div class="widget mt ctx-adj"><h3>Ajuste del bot por contexto</h3><ul class="report-list">${c.adj.list.map((x) => `<li>${x.sum ? `<b>${esc(nm[x.side])}</b>: ${esc(x.text)}` : `<span class="note">${esc(nm[x.side])} · ${esc(x.text)}</span>`}</li>`).join('')}</ul>
+    <div class="note mt">Cambio en la probabilidad de ${esc(nm.home)} según su modelo: <b>${c.adj.delta >= 0 ? '+' : ''}${(c.adj.delta * 100).toFixed(1)} pts</b> (tope prudente). Solo corrige al modelo: el mercado ya descuenta las bajas.</div></div>`
+    : '<div class="note mt">Sin bajas importantes ni diferencias de descanso: el bot no ajusta su modelo.</div>';
+  const team = (s) => {
+    const t = c[s];
+    const players = (t.players || []).map((p) => `<div class="pl-row ${p.status?.miss >= 0.75 ? 'out' : ''}">${p.headshot ? `<img class="avatar" src="${esc(p.headshot)}" alt="" loading="lazy">` : '<span class="avatar ph"></span>'}
+      <div class="grow"><b>${esc(p.name)}</b>${p.role ? ` <span class="note">${esc(p.role)}</span>` : ''}<div class="note">${esc(p.line || '')}</div>${p.detail ? `<div class="note down">${esc(p.detail)}</div>` : ''}</div>${stTag(p.status)}</div>`).join('');
+    const others = (t.injuries || []).filter((i) => !(t.players || []).some((p) => p.name === i.name)).slice(0, 10);
+    return `<div class="widget mt" style="background:var(--fill)"><h3>${esc(nm[s])}${t.season ? ` <span class="note" style="text-transform:none;letter-spacing:0">temporada ${esc(t.season)}</span>` : ''}</h3>
+      ${players || (ev.sport === 'baseball' || ev.sport === 'soccer' ? '' : '<div class="note">ESPN aún no publica estadísticas por jugador de este equipo.</div>')}
+      ${t.lineup?.length ? `<div class="mt"><b>Alineación confirmada</b><ol class="note lineup-ol">${t.lineup.map((x) => `<li>${esc(x)}</li>`).join('')}</ol></div>` : ''}
+      ${others.length ? `<div class="mt"><b>Otras bajas y dudas</b>${others.map((i) => `<div class="flex" style="padding:3px 0">${stTag(i.status)} ${esc(i.name)}${i.pos ? ` <span class="note">${esc(i.pos)}</span>` : ''}${i.detail ? ` <span class="note">· ${esc(i.detail)}</span>` : ''}</div>`).join('')}</div>` : (!players ? '<div class="note">Sin bajas reportadas.</div>' : '')}
+    </div>`;
+  };
+  return `<div class="widget" style="background:var(--fill)"><h3>Contexto del partido</h3>${ctxRows}</div>${adj}
+    <div class="grid halves">${team('home')}${team('away')}</div>
+    <div class="note mt">Fuentes: ESPN${ev.sport === 'baseball' ? ' y MLB Stats API' : ''}. Se actualiza cada 30 min; el bot también lo usa antes de cada partido.${ev.sport === 'soccer' ? ' Para estadísticas de jugadores de fútbol (xG, pases) ve a 📈 Gráficas (365Scores).' : ''}</div>`;
 }
 
 // ---------- Datos avanzados y fuentes externas ----------

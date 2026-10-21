@@ -481,6 +481,10 @@ export async function getSummary(league, eventId) {
     })),
     odds: data.pickcenter?.[0] ? parseEspnOdds({ odds: [data.pickcenter[0]] }) : null,
     standings: data.standings || null,
+    // Contexto: récord de local/visita de cada equipo, serie entre ellos en la temporada y pronóstico de ESPN.
+    records: Object.fromEntries((data.header?.competitions?.[0]?.competitors || []).map((c) => [c.homeAway, Object.fromEntries((c.record || []).map((r) => [r.type, r.summary || r.displayValue]))])),
+    seasonSeries: (data.seasonseries || []).map((s) => s.summary || s.description).filter(Boolean),
+    predictor: data.predictor?.homeTeam?.gameProjection ? { home: parseFloat(data.predictor.homeTeam.gameProjection) / 100, away: parseFloat(data.predictor.awayTeam?.gameProjection) / 100 } : null,
   };
 }
 

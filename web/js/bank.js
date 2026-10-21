@@ -360,7 +360,7 @@ export const oddsBucket = (o) => (o < 2 ? 'menos de 2.00' : o < 3 ? '2.00 a 2.99
 export const segKey = (sport, market, odds) => `${sport}|${market}|${oddsBucket(odds)}`;
 const SEG_MIN = 30; // resultados mínimos antes de juzgar un segmento
 
-export function recordShadow(ev, sel) {
+export function recordShadow(ev, sel, adj = 0) {
   if (ev.state !== 'pre' || !sel.odds || !sel.value) return false;
   if (state.shadow.some((s) => s.eventId === ev.id && s.market === sel.market && s.pick === sel.pick)) return false;
   state.shadow.push({
@@ -369,6 +369,7 @@ export function recordShadow(ev, sel) {
     odds: sel.odds, p: sel.p, ev: sel.ev, seg: segKey(ev.sport, sel.market, sel.odds), t: Date.now(), status: 'pending',
     // Qué pensó: su modelo, el mercado (Polymarket/Kalshi/casas) y el peso que le dio a su modelo en ese deporte.
     pModel: sel.pModel ?? null, pMarket: sel.pMarket ?? null, w: state.weights[ev.sport] ?? null, src: sel.oddsSource || null,
+    adj: adj ? Math.round(adj * 1000) / 1000 : 0, // ajuste del modelo por bajas y descanso (para medir si ayuda)
   });
   if (state.shadow.length > 4000) state.shadow = state.shadow.slice(-4000);
   return true;

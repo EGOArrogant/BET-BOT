@@ -1,8 +1,14 @@
 {
-  "version": "2.3.1",
-  "date": "2026-10-19",
+  "version": "2.4.0",
+  "date": "2026-10-20",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Nueva pestaña 👥 Jugadores en NBA, NFL, MLB y fútbol: jugadores clave con promedios de temporada (NBA) o líderes por posición (NFL), si juegan o están de baja, y otras bajas y dudas",
+    "Contexto del partido: días de descanso y back-to-back, récord de local y de visita, serie entre ellos y pronóstico de ESPN",
+    "Béisbol (MLB y LMB): abridores probables con ERA, WHIP y sus últimas 3 aperturas, y alineación confirmada cuando sale (MLB Stats API)",
+    "El modelo se ajusta con prudencia por bajas importantes y descanso (con tope por deporte); las lesiones largas no cuentan como baja nueva",
+    "El Reporte de aprendizaje compara las apuestas con y sin ajuste para medir si mejora los resultados; la IA recibe todo este contexto",
+    "SofaScore no se integra: bloquea toda lectura automática (los datos vienen de ESPN y MLB Stats API, que sí lo permiten)",
     "Tema oscuro balanceado: un punto intermedio (ni tan negro ni tan claro) y tarjetas que se distinguen mejor del fondo",
     "Cada sección con su propio color suave: Inicio azul, Fútbol verde, Deportes naranja, Combate rojo, eSports morado, Apostar y Oro dorado, Top Polymarket turquesa, Banca menta, Noticias gris azulado",
     "El color de la sección aparece en el menú, la barra inferior, el título, los títulos de cada bloque, los filtros activos y las ligas; En vivo de Inicio usa el color de cada categoría",
