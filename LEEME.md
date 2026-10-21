@@ -66,6 +66,15 @@ En **Más → Ajustes → Actualizaciones**, presiona **Buscar actualización**.
 Cuando Claude publique una nueva versión, te dará la dirección de actualizaciones para pegarla ahí una sola vez.
 Después, cada actualización se instala con un clic, conserva tus apuestas y claves, y respalda la versión anterior en `data\`.
 
+## 7. Servidor en Python (en prueba, opcional)
+
+Hay una versión nueva del servidor escrita en Python (carpeta `servidor_py`). Hace lo mismo que `server.ps1`, pero atiende muchas consultas a la vez y guarda tus datos en una base de datos (`data/betbot.db`). Además sigue escribiendo `state.json` y `apuestas.jsonl`, así puedes volver a PowerShell cuando quieras sin perder nada.
+
+1. Instala Python 3.12 o más nuevo (una sola vez):  `winget install -e --id Python.Python.3.12 --scope user`
+2. Cierra la ventana negra de BetBot MX.
+3. Abre **`iniciar-python.bat`**. La primera vez prepara Python (tarda un minuto).
+4. Para volver al servidor de siempre: cierra esa ventana y abre `iniciar.bat`.
+
 ## Problemas comunes
 
 | Problema | Solución |
