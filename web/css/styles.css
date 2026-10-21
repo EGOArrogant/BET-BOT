@@ -713,3 +713,4 @@ html.is-offline #view { filter: grayscale(.6); opacity: .7; transition: filter .
 .ctx-table td:first-child { color: var(--text-2); white-space: nowrap; }
 .ctx-adj { background: transparent !important; border: 1.5px dashed color-mix(in srgb, var(--text) 30%, transparent); }
 .lineup-ol { margin: 6px 0 0; padding-left: 20px; columns: 2; }
+.src-dl { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 12px; margin: 8px 0; }

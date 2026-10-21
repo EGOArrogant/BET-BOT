@@ -87,8 +87,18 @@ function soccerModel(ev, table) {
   let { lh, la, known } = base;
   const xg = xgLambdas(ev, base);
   if (xg) { lh = (1 - xg.w) * lh + xg.w * xg.lhX; la = (1 - xg.w) * la + xg.w * xg.laX; known = true; }
+  // Modelo entrenado con temporadas pasadas (servidor de Python): goles esperados de Dixon-Coles y 1X2 calibrado.
+  // Pesa 50% (70% si la app no tiene datos propios del partido); el 1X2 final mezcla ambos.
+  const py = ev.pyModel;
+  const wPy = py ? (known ? 0.5 : 0.7) : 0;
+  if (py) { lh = (1 - wPy) * lh + wPy * py.lh; la = (1 - wPy) * la + wPy * py.la; known = true; }
   const line = ev.odds?.total?.line ?? 2.5;
   const pre = soccerOutcome(lh, la, 0, 0, line);
+  if (py) {
+    const mix = (k) => (1 - wPy) * pre[k] + wPy * py[k];
+    const h = mix('home'), d = mix('draw'), a = mix('away'), s = h + d + a;
+    pre.home = h / s; pre.draw = d / s; pre.away = a / s;
+  }
   let live = null, liveXg = null;
   if (ev.state === 'in') {
     const min = soccerMinute(ev);
@@ -107,7 +117,7 @@ function soccerModel(ev, table) {
     }
     live = { ...soccerOutcome(rh * rem, ra * rem, ev.home.score || 0, ev.away.score || 0, liveLine), minute: min, line: liveLine };
   }
-  return { kind: 'soccer', lh, la, line, pre, live, known, xg: xg ? { ...xg, base: { lh: base.lh, la: base.la } } : null, liveXg };
+  return { kind: 'soccer', lh, la, line, pre, live, known, xg: xg ? { ...xg, base: { lh: base.lh, la: base.la } } : null, liveXg, py: py ? { ...py, w: wPy } : null };
 }
 
 // ---------- NFL / NBA / MLB: Pythagorean + log5 + localía ----------

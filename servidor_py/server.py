@@ -37,8 +37,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from db import Store  # noqa: E402
 import push as pushmod  # noqa: E402
 import bot as botmod  # noqa: E402
+from historico import FD_LINKS, Historico  # noqa: E402
+from modelos import Modelos  # noqa: E402
 
-SERVER_VERSION = "3.1.0"
+SERVER_VERSION = "3.2.0"
 ENGINE = "python"
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -86,6 +88,8 @@ last_liquipedia = 0.0
 lp_lock = asyncio.Lock()
 LOCAL_IPS: set[str] = {"127.0.0.1", "::1"}
 runner: botmod.BotRunner | None = None
+hist: Historico
+modelos: Modelos
 
 
 # ---------- utilidades ----------
@@ -254,12 +258,29 @@ async def lifespan(_app):
     print(f"BetBot MX (Python) corriendo en http://localhost:{ARGS.port}  (cierra esta ventana para detenerlo)")
     print("Acceso desde el celular: " + ("ACTIVO (escanea el QR en Más → Celular)" if _app.state.lan else "desactivado (ejecuta habilitar-telefono.bat una vez)"))
     watchdog = asyncio.create_task(bot_watchdog())
+    trainer = asyncio.create_task(models_loop())
     yield
     watchdog.cancel()
+    trainer.cancel()
     if runner:
         await asyncio.to_thread(runner.stop)
         runner.set_awake(False)
     await http.aclose()
+
+
+async def models_loop():
+    """Modelo de fútbol: se entrena al arrancar si no existe o tiene más de 24 h, y se revisa cada hora."""
+    await asyncio.sleep(15)
+    while True:
+        try:
+            age = modelos.age_hours()
+            if age is None or age > 24:
+                print("Modelo de fútbol: entrenando con temporadas pasadas (tarda unos minutos)...")
+                r = await asyncio.to_thread(modelos.train)
+                print(f"Modelo de fútbol: {'listo' if r.get('ok') else r.get('error', 'sin cambios')} ({r.get('seconds', 0)} s)")
+        except Exception as e:
+            print(f"Modelo de fútbol: {e}")
+        await asyncio.sleep(3600)
 
 
 async def bot_watchdog():
@@ -764,6 +785,55 @@ async def bot_restart(req: Request):
     return j(runner.status())
 
 
+# ---------- modelos entrenados (fase 3) ----------
+@app.get("/api/modelos/estado")
+async def modelos_estado():
+    return j({"busy": modelos.busy, "error": modelos.error, "ageHours": modelos.age_hours(), "info": modelos.info,
+              "data": hist.summary(), "links": FD_LINKS})
+
+
+@app.post("/api/modelos/entrenar")
+async def modelos_entrenar(req: Request):
+    if (deny := pc_only(req)):
+        return deny
+    if modelos.busy:
+        return j({"started": False, "busy": True})
+    asyncio.create_task(asyncio.to_thread(modelos.train))
+    return j({"started": True})
+
+
+@app.post("/api/modelos/futbol")
+async def modelos_futbol(req: Request):
+    b = await body_json(req)
+    items = b.get("items") or []
+    return j({"preds": [modelos.predict(it.get("leagueId"), it.get("home"), it.get("away")) for it in items[:200]]})
+
+
+@app.post("/api/historico/resultados")
+async def historico_resultados(req: Request):
+    # Partidos terminados que ve el motor del bot: se guardan para entrenar (sin duplicados).
+    if (deny := pc_only(req)):
+        return deny
+    b = await body_json(req)
+    return j({"saved": hist.add_bot_results(b.get("items") or [])})
+
+
+@app.post("/api/historico/subir")
+async def historico_subir(req: Request):
+    # Archivos CSV de football-data.co.uk que descargaste tú: traen momios de apertura y cierre.
+    if (deny := pc_only(req)):
+        return deny
+    raw = await req.body()
+    try:
+        textcsv = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        textcsv = raw.decode("latin-1")
+    r = await asyncio.to_thread(hist.import_football_data, textcsv)
+    if r["saved"] and not modelos.busy:
+        asyncio.create_task(asyncio.to_thread(modelos.train, False))  # re-entrena con los momios nuevos
+    return j(r)
+
+
 # ---------- base de datos de apuestas liquidadas ----------
 @app.post("/api/ledger")
 async def ledger_post(req: Request):
@@ -820,6 +890,9 @@ def init() -> None:
         TOKEN_PATH.write_text("".join(secrets.choice(alphabet) for _ in range(24)), encoding="utf-8")
     TOKEN = TOKEN_PATH.read_text(encoding="utf-8-sig").strip()
     store = Store(DATA)
+    global hist, modelos
+    hist = Historico(DATA)
+    modelos = Modelos(DATA, hist)
     rep = store.sync_from_files()
     if rep["estado"] or rep["apuestas"] or rep["push"]:
         print(f"Datos importados de los archivos: estado={'sí' if rep['estado'] else 'sin cambios'}, apuestas nuevas={rep['apuestas']}, avisos={'sí' if rep['push'] else 'sin cambios'}")

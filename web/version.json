@@ -1,8 +1,14 @@
 {
-  "version": "2.5.0",
+  "version": "2.6.0",
   "date": "2026-10-20",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Fútbol con modelo entrenado en temporadas pasadas (Dixon-Coles) para Premier, LaLiga, Serie A, Ligue 1, Liga MX y Champions; se mezcla con el modelo de la app",
+    "Backtesting sin trampa: cada partido se predice solo con lo que se sabía antes; resultados por liga en Banca",
+    "Calibración isotónica que solo se usa si mejora en partidos que el modelo no vio",
+    "Tu CLV real (si conseguiste mejor momio que el de cierre) en Banca",
+    "Sube los archivos de football-data.co.uk que descargues para medir ROI y CLV histórico contra el cierre",
+    "El bot guarda cada partido de fútbol terminado y el modelo se re-entrena solo cada 24 h",
     "Bot 24/7 (servidor en Python): escaneo, liquidación, modo práctica y piloto automático corren en tu PC aunque no tengas la app abierta",
     "El servidor vigila el motor del bot: si se cae o deja de responder lo reinicia solo, y lo renueva cada 6 h",
     "Opción para que la PC no se duerma mientras el bot opera (la pantalla sí se puede apagar)",

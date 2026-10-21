@@ -95,10 +95,41 @@ async function refreshLeague(lg) {
   // Precios de Polymarket y Kalshi para cada partido (si existen).
   const pmk = await getPredictionMarkets(lg).catch(() => []);
   for (const ev of events) { ev.pm = matchPrediction(ev, pmk); attachX365(ev); }
+  await attachPyModel(lg, events); // modelo entrenado con temporadas pasadas (servidor de Python)
   S.events.set(lg.id, events);
   S.tables.set(lg.id, table);
   for (const k of [...S.analysis.keys()]) if (k.startsWith(lg.id + ':')) S.analysis.delete(k);
   for (const ev of events) analyze(ev, table, S.summaries.get(key(ev))?.winProb);
+}
+
+// ---------- modelo entrenado (servidor de Python, fase 3) ----------
+// Para fútbol, el servidor tiene un modelo Dixon-Coles entrenado con temporadas pasadas y calibrado con su
+// backtesting. Se pide una vez cada 30 min por liga y se mezcla con el modelo de la app (ver models.js).
+const PY_LEAGUES = new Set(['eng.1', 'esp.1', 'ita.1', 'fra.1', 'mex.1', 'uefa.champions']);
+S.pyCache = new Map(); // id del partido -> { t, p }
+async function attachPyModel(lg, events) {
+  if (!PY_LEAGUES.has(lg.id) || S.cfg?.engine !== 'python') return;
+  const need = events.filter((e) => e.state !== 'post' && !(S.pyCache.get(e.id) && Date.now() - S.pyCache.get(e.id).t < 30 * 60_000));
+  if (need.length) {
+    try {
+      const r = await fetch('/api/modelos/futbol', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: need.map((e) => ({ leagueId: lg.id, home: e.home.name, away: e.away.name })) }) });
+      const { preds } = await r.json();
+      need.forEach((e, i) => S.pyCache.set(e.id, { t: Date.now(), p: preds?.[i] || null }));
+    } catch {}
+  }
+  for (const e of events) e.pyModel = S.pyCache.get(e.id)?.p || null;
+}
+// El motor 24/7 manda al servidor los partidos de fútbol terminados (con su momio previo) para seguir entrenando.
+S.pySent = new Set();
+function postFinishedSoccer() {
+  if (!B.isServerBot) return;
+  const items = allEvents().filter((e) => e.completed && PY_LEAGUES.has(e.leagueId) && !S.pySent.has(e.id) && e.home.score != null && e.away.score != null)
+    .map((e) => ({ id: e.id, leagueId: e.leagueId, date: e.date, home: e.home.name, away: e.away.name, hg: Number(e.home.score), ag: Number(e.away.score),
+      odds: e.odds && e.odds.home && e.odds.away ? { home: e.odds.home, draw: e.odds.draw || null, away: e.odds.away } : null }));
+  if (!items.length) return;
+  fetch('/api/historico/resultados', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) })
+    .then((r) => { if (r.ok) items.forEach((x) => S.pySent.add(x.id)); }).catch(() => {});
 }
 
 async function refreshAll() {
@@ -114,6 +145,7 @@ async function refreshAll() {
   B.settleWithEvents(events);
   B.settleShadow(events);
   B.learnFromEvents(events);
+  postFinishedSoccer();
   await settleOld();
   B.cleanSlip(events);
   backfillLedger().catch(() => {});
@@ -1216,7 +1248,67 @@ function viewBank() {
     ${Object.keys(st.weights).map((s) => { const x = L[s]; return `<tr><td>${D.SPORT_ICON[s]} ${D.SPORT_NAME[s]}</td><td class="num">${x?.n || 0}</td><td class="num">${pct(x?.hitRate)}</td><td class="num">${x ? x.bm.toFixed(3) : '—'}</td><td class="num">${x?.bk != null ? x.bk.toFixed(3) : '—'}</td><td class="num"><b>${pct(st.weights[s])}</b></td></tr>`; }).join('')}
   </tbody></table><div class="note mt">El bot guarda su predicción de cada partido antes de que empiece. Con 15 partidos terminados o más en un deporte, ajusta cuánto confía en su modelo frente al mercado. Así aprende sin arriesgar dinero.</div></div>
   ${knowledgeSection()}
+  ${modelSection()}
   <div class="section-title">Actividad</div><div class="widget glass">${logList(40)}</div>`;
+}
+
+// ---------- Modelo entrenado con temporadas pasadas (fase 3) ----------
+async function loadModelos(force = false) {
+  if (S.modelosLoading || (!force && S.modelos && Date.now() - S.modelos.t < 60_000)) return;
+  S.modelosLoading = true;
+  try { S.modelos = { t: Date.now(), ...(await (await fetch('/api/modelos/estado', { cache: 'no-store' })).json()) }; } catch { S.modelos = { t: Date.now(), error: 'sin servidor de Python' }; }
+  S.modelosLoading = false;
+  if (S.tab === 'bank') render();
+}
+function modelSection() {
+  if (S.cfg?.engine !== 'python') return '';
+  loadModelos();
+  const m = S.modelos;
+  const head = '<div class="section-title">Modelo entrenado con temporadas pasadas <small>Fútbol · Dixon-Coles · backtesting sin trampa</small></div>';
+  if (!m) return head + '<div class="widget glass"><div class="shimmer"></div><div class="shimmer"></div></div>';
+  const info = m.info || {}, g = info._global, ligas = Object.entries(info).filter(([k]) => !k.startsWith('_'));
+  const n3 = (x) => (x == null ? '—' : x.toFixed(3));
+  // Tu CLV real: ¿tus apuestas consiguieron mejor momio que el de cierre? (de la base de datos de apuestas)
+  const led = (S.ledger || []).filter((x) => x.closingOdds && x.odds && x.status !== 'void');
+  const clv = led.length ? led.reduce((a, x) => a + (x.odds / x.closingOdds - 1), 0) / led.length : null;
+  const beat = led.length ? led.filter((x) => x.odds > x.closingOdds).length / led.length : null;
+  const rows = ligas.map(([id, x]) => {
+    const t = x.test, r = t?.raw, c = t?.cal;
+    return `<tr><td>${esc(x.name || id)}</td><td class="num">${x.matches}</td><td class="num">${x.trained ? `${esc(x.from || '')} → ${esc(x.to || '')}` : '<span class="note">faltan partidos</span>'}</td>
+      <td class="num">${r ? r.n : '—'}</td><td class="num">${r ? n3(r.logLoss) : '—'}</td><td class="num">${r ? pct(r.accuracy) : '—'}</td>
+      <td class="num">${r?.marketBrier != null ? `${n3(r.brier)} vs ${n3(r.marketBrier)}` : '<span class="note">sin momios</span>'}</td>
+      <td class="num">${r?.bets ? `${r.bets} · ${pct(r.roi, 1)}` : '—'}</td><td class="num">${r?.clv != null ? pct(r.clv, 1) : '—'}</td></tr>`;
+  }).join('');
+  const rel = g?.relRaw?.length > 1 ? lineChart('py-calib', {
+    series: [
+      { name: 'Modelo (lo que pasó)', color: 'var(--acc-soccer, var(--green))', pts: g.relRaw.map((b) => ({ x: b.p, y: b.freq })) },
+      { name: 'Calibración perfecta', color: 'var(--text-3)', dash: true, pts: [{ x: 0, y: 0 }, { x: 1, y: 1 }] },
+    ], xFmt: (x) => `Dijo ${Math.round(x * 100)}%`, height: 190,
+  }) : '';
+  const t = g?.test;
+  const verdict = !t ? 'Todavía no hay suficientes partidos para el backtesting.'
+    : `Probado en <b>${t.raw.n}</b> partidos que el modelo no vio (desde ${esc(t.from)}): acierta al favorito el <b>${pct(t.raw.accuracy)}</b> con error (log loss) de <b>${n3(t.raw.logLoss)}</b>; adivinar al azar daría 1.099. `
+      + (t.raw.marketBrier != null ? (t.raw.brier < t.raw.marketBrier ? 'Fue <b>más preciso que el momio de cierre</b> en esos partidos.' : 'El <b>momio de cierre fue más preciso</b>: por eso el bot mezcla su modelo con el mercado.') : 'Para compararlo contra el momio de cierre y medir CLV, sube los archivos de football-data (abajo).')
+      + (info._calUsed ? ' La calibración isotónica mejoró el error y se está usando.' : ' Ya sale bien calibrado: la calibración isotónica no lo mejoró, así que no se usa.');
+  const links = (m.links || []).map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.split('/').slice(-2).join('/'))}</a>`).join(' · ');
+  const data = Object.values(m.data || {}).reduce((a, x) => a + x.matches, 0);
+  return `${head}
+  <div class="grid two">
+    <div class="widget glass"><h3>Qué tan bueno es</h3><p>${verdict}</p>${rel}
+      <div class="kv mt"><span>Partidos en la base histórica</span><b>${data.toLocaleString('es-MX')}</b></div>
+      <div class="kv"><span>Último entrenamiento</span><b>${m.busy ? 'entrenando…' : m.ageHours != null ? `hace ${m.ageHours < 1 ? Math.round(m.ageHours * 60) + ' min' : Math.round(m.ageHours) + ' h'}` : '—'}</b></div>
+      <div class="kv"><span>Tu CLV real (${led.length} apuestas con cierre)</span><b class="${clv > 0 ? 'up' : clv < 0 ? 'down' : ''}">${clv != null ? pct(clv, 1) + ` · le ganas al cierre ${pct(beat)}` : '—'}</b></div>
+      ${m.error ? `<div class="warn mt">${esc(m.error)}</div>` : ''}
+      ${S.cfg.local ? `<div class="flex mt"><button class="btn small" data-pytrain ${m.busy ? 'disabled' : ''}>${m.busy ? 'Entrenando…' : '↻ Re-entrenar ahora'}</button></div>` : ''}
+      <div class="note mt">Se re-entrena solo cada 24 h con los partidos nuevos que ve el bot. El CLV positivo (conseguir mejor momio que el de cierre) es la mejor señal de que el bot encuentra valor de verdad, aunque una racha de resultados diga otra cosa.</div></div>
+    <div class="widget glass"><h3>Momios históricos (para medir CLV)</h3>
+      <p class="note">football-data.co.uk tiene los momios de apertura y cierre de cada partido, pero <b>no permite descargas de agentes de IA</b>, así que el bot no los baja solo. Descárgalos tú (clic en cada enlace) y súbelos aquí: el modelo se re-entrena y podrás ver su ROI y CLV histórico contra el cierre.</p>
+      <div class="src-dl">${links}</div>
+      ${S.cfg.local ? '<label class="btn small mt" style="display:inline-block">📤 Subir archivos CSV<input type="file" id="py-upload" accept=".csv,text/csv" multiple hidden></label><div class="note" id="py-upload-msg"></div>' : '<div class="note mt">Súbelos desde la PC.</div>'}
+      <div class="note mt">Partidos con momio de cierre: ${Object.values(m.data || {}).reduce((a, x) => a + (x.withClose || 0), 0).toLocaleString('es-MX')} · con apertura: ${Object.values(m.data || {}).reduce((a, x) => a + (x.withOpen || 0), 0).toLocaleString('es-MX')}</div></div>
+  </div>
+  <div class="widget glass mt"><h3>Backtesting por liga (partidos que el modelo no vio)</h3><div class="table-wrap"><table class="t"><thead><tr><th>Liga</th><th class="num">Partidos</th><th class="num">Datos</th><th class="num">Probados</th><th class="num">Log loss</th><th class="num">Acierto</th><th class="num">Brier modelo vs cierre</th><th class="num">Apuestas · ROI</th><th class="num">CLV</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="note mt">Log loss y Brier: menor es mejor. "Apuestas" simula apostar cuando el modelo ve valor (EV ≥ 3%) al momio disponible; solo aparece con momios históricos.</div></div>`;
 }
 
 // Conocimiento acumulado: calibración de probabilidades y base de datos de apuestas liquidadas.
@@ -2698,7 +2790,7 @@ async function restartServer() {
 
 // ---------- eventos ----------
 document.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-betsource],[data-cashout],[data-combatdiv],[data-combattitle],[data-smartperiod],[data-smartscan],[data-smartfollow],[data-smartauto],[data-restartserver],[data-eventsmart],[data-airetry],[data-phoneenable],[data-notifread],[data-notifall],[data-notiffilter],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
+  const t = e.target.closest('[data-tab],[data-tab-link],[data-secleague],[data-mfilter],[data-slip],[data-open],[data-close],[data-stab],[data-ai-run],[data-oddsapi],[data-banktab],[data-cancel],[data-mx],[data-more],[data-tablesleague],[data-newsleague],[data-theme-set],[data-slipdel],[data-slipplace],[data-research],[data-placed],[data-notifclose],[data-notifperm],[data-savekey],[data-update],[data-copydiag],[data-takeover],[data-betsource],[data-cashout],[data-combatdiv],[data-combattitle],[data-smartperiod],[data-smartscan],[data-smartfollow],[data-smartauto],[data-restartserver],[data-pytrain],[data-eventsmart],[data-airetry],[data-phoneenable],[data-notifread],[data-notifall],[data-notiffilter],#bell,#scan-now,#refresh-btn,#reset-bank,#backdrop');
   if (!t) return;
   // Notificaciones: tocar una la marca como leída (y luego abre su partido o enlace); ✓ solo la marca.
   if (t.dataset.notifread) {
@@ -2724,6 +2816,11 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.smartperiod) { S.smart.period = t.dataset.smartperiod; S.smart.board = null; render(); refreshSmart(true); return; }
   if (t.dataset.smartscan !== undefined) { refreshSmart(true); render(); return; }
   if (t.dataset.eventsmart) { const a = S.analysis.get(t.dataset.eventsmart); if (a) showEventSmart(a, { force: true, perSide: t.dataset.more ? 12 : (S.smart.events.get(t.dataset.eventsmart)?.perSide || 6) }); return; }
+  if (t.dataset.pytrain !== undefined) {
+    t.disabled = true; t.textContent = 'Entrenando…';
+    fetch('/api/modelos/entrenar', { method: 'POST' }).then(() => { toast('🧠 Entrenando el modelo de fútbol (tarda unos segundos)'); setTimeout(() => loadModelos(true), 8000); });
+    return;
+  }
   if (t.dataset.restartserver !== undefined) { t.disabled = true; t.textContent = 'Reiniciando…'; restartServer(); return; }
   if (t.dataset.smartauto !== undefined) { B.getState().smart.autoFollow = true; B.save(); refreshSmart(true); render(); return; }
   if (t.dataset.smartfollow) {
@@ -2804,6 +2901,20 @@ document.addEventListener('click', async (e) => {
 
 document.addEventListener('change', (e) => {
   const t = e.target;
+  if (t.id === 'py-upload') {
+    const files = [...(t.files || [])];
+    const msg = $('#py-upload-msg');
+    (async () => {
+      let saved = 0, rows = 0;
+      for (const f of files) {
+        if (msg) msg.textContent = `Importando ${f.name}…`;
+        try { const r = await (await fetch('/api/historico/subir', { method: 'POST', headers: { 'Content-Type': 'text/csv' }, body: await f.text() })).json(); saved += r.saved || 0; rows += r.rows || 0; } catch {}
+      }
+      if (msg) msg.textContent = `Listo: ${rows} partidos leídos, ${saved} guardados o completados con momios. El modelo se está re-entrenando.`;
+      setTimeout(() => loadModelos(true), 10000);
+    })();
+    return;
+  }
   if (t.id === 'sw-bot247' || t.id === 'sw-keepawake') {
     const body = t.id === 'sw-bot247' ? { enabled: t.checked } : { keepAwake: t.checked };
     fetch('/api/bot/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
