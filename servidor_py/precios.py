@@ -109,6 +109,10 @@ class Precios:
         month = int(cfg.get("ODDS_CREDITOS_MES") or 500)
         regions = (cfg.get("ODDS_REGIONES") or "eu,uk").replace(" ", "")
         rem = self.meta("remaining")
+        # Un saldo de hace más de 6 h ya no se cree (los créditos se renuevan cada mes): la siguiente consulta
+        # gratuita de partidos (/events) lo vuelve a confirmar.
+        if rem is not None and time.time() - float(self.meta("remaining_t") or 0) > 6 * 3600:
+            rem = None
         day = dt.date.today().isoformat()
         spent = float(self.meta("day_spent") or 0) if self.meta("day") == day else 0.0
         return {"month": month, "daily": round(month / 30, 1), "spentToday": spent, "remaining": float(rem) if rem is not None else None,
