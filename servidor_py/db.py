@@ -50,17 +50,61 @@ class Store:
         self.db.execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", (k, v))
         return v
 
+    @staticmethod
+    def _atomic_write(path: Path, text: str) -> None:
+        # Se escribe en un temporal, se fuerza a disco y se reemplaza de golpe: si la PC se apaga o el
+        # servidor se cierra a la mitad, queda el archivo anterior completo y no uno vacío o con ceros.
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+
+    def _read_rev(self) -> int | None:
+        """Revisión de data/state.rev; None si el archivo está dañado (p. ej. lleno de ceros tras un apagón)."""
+        if not self.rev_path.exists():
+            return None  # se borró: se toma la revisión de la base de datos (o 0 si es la primera vez)
+        try:
+            raw = self.rev_path.read_bytes().strip()
+        except OSError:
+            return None
+        if not raw:
+            return 0
+        return int(raw) if raw.isdigit() else None  # ceros de un apagón o basura = dañado
+
     def sync_from_files(self) -> dict:
         report = {"estado": False, "apuestas": 0, "push": False}
         with self.lock:
             # Estado: manda el que tenga la revisión más nueva.
-            file_rev = int(self.rev_path.read_text(encoding="utf-8").strip() or 0) if self.rev_path.exists() else 0
+            file_rev = self._read_rev()
             row = self.db.execute("SELECT rev FROM estado WHERE id = 1").fetchone()
-            if self.state_path.exists() and (row is None or file_rev != row[0]):
-                text = self.state_path.read_text(encoding="utf-8-sig")
-                json.loads(text)  # valida
-                self.db.execute("INSERT OR REPLACE INTO estado (id, json, rev, t) VALUES (1, ?, ?, ?)", (text, file_rev, time.time()))
-                report["estado"] = True
+            if file_rev is None:
+                # Archivo de revisión dañado: la base de datos (SQLite, a prueba de apagones) es la referencia.
+                if self.rev_path.exists() or row is not None:
+                    print("data/state.rev faltaba o estaba dañado: se usa la revisión guardada en la base de datos y se repara.")
+                if row is not None:
+                    self._atomic_write(self.rev_path, str(row[0]))
+                    file_rev = row[0]
+                else:
+                    file_rev = 0
+            if self.state_path.exists():
+                try:
+                    text = self.state_path.read_text(encoding="utf-8-sig")
+                    json.loads(text)  # valida
+                    valid = True
+                except (ValueError, OSError) as e:
+                    valid = False
+                    # state.json dañado: si la base de datos tiene el estado, se reconstruye el archivo desde ahí.
+                    print(f"data/state.json no se pudo leer ({e}); se conserva el estado de la base de datos.")
+                    if row is not None:
+                        cur_text = self.db.execute("SELECT json FROM estado WHERE id = 1").fetchone()[0]
+                        self._atomic_write(self.state_path, cur_text)
+                        self._atomic_write(self.rev_path, str(row[0]))
+                if valid and (row is None or file_rev != row[0]):
+                    self.db.execute("INSERT OR REPLACE INTO estado (id, json, rev, t) VALUES (1, ?, ?, ?)", (text, file_rev, time.time()))
+                    self._atomic_write(self.rev_path, str(file_rev))
+                    report["estado"] = True
             # Apuestas liquidadas: se agregan las que falten (sin duplicados).
             if self.ledger_path.exists():
                 cur = self.db.execute("SELECT COUNT(*) FROM apuestas").fetchone()[0]
@@ -116,10 +160,8 @@ class Store:
             rev += 1
             self.db.execute("INSERT OR REPLACE INTO estado (id, json, rev, t) VALUES (1, ?, ?, ?)", (text, rev, time.time()))
             # Copia en los archivos de siempre (compatibilidad con el servidor de PowerShell).
-            tmp = self.state_path.with_suffix(".json.tmp")
-            tmp.write_text(text, encoding="utf-8")
-            os.replace(tmp, self.state_path)
-            self.rev_path.write_text(str(rev), encoding="utf-8")
+            self._atomic_write(self.state_path, text)
+            self._atomic_write(self.rev_path, str(rev))
             return True, rev, None
 
     # ---------- base de datos de apuestas ----------
@@ -181,5 +223,5 @@ class Store:
         if not k:
             return
         doc = {"priv": k[0], "pub": k[1], "lastT": k[2], "subs": self.push_subs()}
-        self.push_path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._atomic_write(self.push_path, json.dumps(doc, ensure_ascii=False, indent=2))
         self._meta("push_mtime", str(self.push_path.stat().st_mtime))

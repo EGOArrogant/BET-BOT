@@ -1,8 +1,10 @@
 {
-  "version": "2.7.1",
+  "version": "2.7.2",
   "date": "2026-10-21",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Arreglado: el servidor ya no se detiene si data/state.rev o data/state.json quedan dañados por un apagón o un cierre a la mitad; los repara solo con la copia de la base de datos",
+    "Los archivos de datos, tus claves (.env) y el modelo entrenado se guardan de forma segura (archivo temporal y reemplazo de golpe), para que un apagón no los deje vacíos",
     "Si se acaban los créditos de The Odds API, el bot vuelve a revisar solo cuando se renuevan (sin gastar créditos al revisar)",
     "Momio por encima del precio justo: el servidor compara casas contra Pinnacle sin margen y marca cuando una paga de más (💲 en cada partido y sección en Inicio)",
     "El piloto automático y el modo práctica usan esas apuestas (solo casas que operan en México) con la probabilidad justa de Pinnacle",

@@ -23,6 +23,7 @@ import numpy as np
 from scipy.optimize import minimize, minimize_scalar
 from scipy.stats import poisson
 
+from db import Store
 from historico import LEAGUES, Historico, match_team
 
 XI = 0.0035          # decaimiento por día (vida media ≈ 200 días)
@@ -347,8 +348,8 @@ class Modelos:
             info["_trained"] = time.time()
             info["_seconds"] = round(time.time() - t0, 1)
             self.fits, self.info, self.cal = fits, info, cal
-            self.file.write_text(json.dumps({"info": info, "cal": cal, "fits": {
-                l: {"teams": f.teams, "x": [float(v) for v in f.x], "rho": f.rho} for l, f in fits.items()}}), encoding="utf-8")
+            Store._atomic_write(self.file, json.dumps({"info": info, "cal": cal, "fits": {
+                l: {"teams": f.teams, "x": [float(v) for v in f.x], "rho": f.rho} for l, f in fits.items()}}))
             return {"ok": True, "seconds": info["_seconds"]}
         except Exception as e:
             self.error = f"Error al entrenar: {e}"

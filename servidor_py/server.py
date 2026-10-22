@@ -41,7 +41,7 @@ from historico import FD_LINKS, Historico  # noqa: E402
 from modelos import Modelos  # noqa: E402
 from precios import Precios  # noqa: E402
 
-SERVER_VERSION = "3.3.0"
+SERVER_VERSION = "3.3.1"
 ENGINE = "python"
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -119,7 +119,7 @@ def set_env_values(vals: dict[str, str]) -> None:
         else:
             out.append(l)
     out += [f"{k}={v}" for k, v in vals.items() if k not in done]
-    ENV_PATH.write_text("\r\n".join(out) + "\r\n", encoding="utf-8")
+    Store._atomic_write(ENV_PATH, "\r\n".join(out) + "\r\n")  # a prueba de apagones: no se pierden tus claves
 
 
 def j(obj, status: int = 200, headers: dict | None = None) -> Response:
