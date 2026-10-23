@@ -154,8 +154,24 @@ function lineValueSection() {
 // backtesting. Se pide una vez cada 30 min por liga y se mezcla con el modelo de la app (ver models.js).
 const PY_LEAGUES = new Set(['eng.1', 'esp.1', 'ita.1', 'fra.1', 'mex.1', 'uefa.champions']);
 S.pyCache = new Map(); // id del partido -> { t, p }
+// NFL, NBA, MLB, LMB y tenis: modelo Elo entrenado con temporadas pasadas (o con lo que ve el bot).
+const RATING_LEAGUES = new Set(['nfl', 'nba', 'mlb', 'lmb', 'atp', 'wta']);
+async function attachRating(lg, events) {
+  const need = events.filter((e) => e.state !== 'post' && !(S.pyCache.get('r' + e.id) && Date.now() - S.pyCache.get('r' + e.id).t < 30 * 60_000));
+  if (need.length) {
+    try {
+      const r = await fetch('/api/modelos/rating', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: need.map((e) => ({ leagueId: lg.id, home: e.home.name, away: e.away.name, date: e.date, neutral: !!e.neutral })) }) });
+      const { preds } = await r.json();
+      need.forEach((e, i) => S.pyCache.set('r' + e.id, { t: Date.now(), p: preds?.[i] || null }));
+    } catch {}
+  }
+  for (const e of events) e.pyRating = S.pyCache.get('r' + e.id)?.p || null;
+}
 async function attachPyModel(lg, events) {
-  if (!PY_LEAGUES.has(lg.id) || S.cfg?.engine !== 'python') return;
+  if (S.cfg?.engine !== 'python') return;
+  if (RATING_LEAGUES.has(lg.id)) return attachRating(lg, events);
+  if (!PY_LEAGUES.has(lg.id)) return;
   const need = events.filter((e) => e.state !== 'post' && !(S.pyCache.get(e.id) && Date.now() - S.pyCache.get(e.id).t < 30 * 60_000));
   if (need.length) {
     try {
@@ -171,8 +187,11 @@ async function attachPyModel(lg, events) {
 S.pySent = new Set();
 function postFinishedSoccer() {
   if (!B.isServerBot) return;
-  const items = allEvents().filter((e) => e.completed && PY_LEAGUES.has(e.leagueId) && !S.pySent.has(e.id) && e.home.score != null && e.away.score != null)
-    .map((e) => ({ id: e.id, leagueId: e.leagueId, date: e.date, home: e.home.name, away: e.away.name, hg: Number(e.home.score), ag: Number(e.away.score),
+  // Tenis: cuenta quién ganó (1-0); el resto, el marcador final.
+  const sc = (e, side) => (e.sport === 'tennis' ? (e[side].winner ? 1 : 0) : Number(e[side].score));
+  const items = allEvents().filter((e) => e.completed && (PY_LEAGUES.has(e.leagueId) || RATING_LEAGUES.has(e.leagueId)) && !S.pySent.has(e.id)
+      && (e.sport === 'tennis' ? (e.home.winner || e.away.winner) : e.home.score != null && e.away.score != null))
+    .map((e) => ({ id: e.id, leagueId: e.leagueId, date: e.date, home: e.home.name, away: e.away.name, hg: sc(e, 'home'), ag: sc(e, 'away'),
       odds: e.odds && e.odds.home && e.odds.away ? { home: e.odds.home, draw: e.odds.draw || null, away: e.odds.away } : null }));
   if (!items.length) return;
   fetch('/api/historico/resultados', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) })
@@ -1369,7 +1388,26 @@ function modelSection() {
       <div class="note mt">Partidos con momio de cierre: ${Object.values(m.data || {}).reduce((a, x) => a + (x.withClose || 0), 0).toLocaleString('es-MX')} · con apertura: ${Object.values(m.data || {}).reduce((a, x) => a + (x.withOpen || 0), 0).toLocaleString('es-MX')}</div></div>
   </div>
   <div class="widget glass mt"><h3>Backtesting por liga (partidos que el modelo no vio)</h3><div class="table-wrap"><table class="t"><thead><tr><th>Liga</th><th class="num">Partidos</th><th class="num">Datos</th><th class="num">Probados</th><th class="num">Log loss</th><th class="num">Acierto</th><th class="num">Brier modelo vs cierre</th><th class="num">Apuestas · ROI</th><th class="num">CLV</th><th class="num">Peso del modelo</th></tr></thead><tbody>${rows}</tbody></table></div>
-    <div class="note mt">Log loss y Brier: menor es mejor. "Apuestas" simula apostar cuando el modelo ve valor (EV ≥ 3%) al momio disponible; solo aparece con momios históricos.</div></div>`;
+    <div class="note mt">Log loss y Brier: menor es mejor. "Apuestas" simula apostar cuando el modelo ve valor (EV ≥ 3%) al momio disponible; solo aparece con momios históricos.</div></div>
+  ${ratingsTable(m.ratings)}`;
+}
+
+// NFL, MLB, LMB, NBA y tenis: modelo Elo entrenado con temporadas pasadas (o con lo que ve el bot).
+function ratingsTable(rt) {
+  if (!rt?.info) return '';
+  const n3 = (x) => (x == null ? '—' : x.toFixed(3));
+  const src = { nfl: 'nflverse (abiertos)', mlb: 'API oficial de MLB', lmb: 'API oficial de MLB', nba: 'partidos que ve el bot', atp: 'partidos que ve el bot', wta: 'partidos que ve el bot' };
+  const rows = Object.entries(rt.info).filter(([k]) => !k.startsWith('_')).map(([id, x]) => {
+    const r = x.test?.raw;
+    return `<tr><td>${esc(x.name || id)}<div class="note">${esc(src[id] || '')}</div></td><td class="num">${x.matches}</td>
+      <td class="num">${x.trained ? `${esc(x.from)} → ${esc(x.to)}` : `<span class="note">junta ${x.need} partidos (lleva ${x.matches})</span>`}</td>
+      <td class="num">${r ? r.n : '—'}</td><td class="num">${r ? pct(r.accuracy) : '—'}</td><td class="num">${r ? n3(r.logLoss) : '—'}</td>
+      <td class="num">${r?.marketBrier != null ? `${n3(r.brier)} vs ${n3(r.marketBrier)}` : '<span class="note">sin momios</span>'}</td>
+      <td class="num">${r?.bets ? `${r.bets} · ${pct(r.roi, 1)}` : '—'}</td>
+      <td class="num">${x.blend ? `<b>${pct(x.blend.w)}</b>` : '<span class="note">normal</span>'}</td></tr>`;
+  }).join('');
+  return `<div class="widget glass mt"><h3>Otros deportes · Elo con temporadas pasadas</h3><div class="table-wrap"><table class="t"><thead><tr><th>Liga</th><th class="num">Partidos</th><th class="num">Datos</th><th class="num">Probados</th><th class="num">Acierto</th><th class="num">Log loss</th><th class="num">Brier modelo vs cierre</th><th class="num">Apuestas · ROI</th><th class="num">Peso del modelo</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="note mt">Elo: cada equipo o jugador sube al ganar y baja al perder, con ventaja de local. Los ajustes se eligen con el 60% más viejo y se prueba en el 40% reciente. Adivinar al azar da log loss 0.693. Si el peso del modelo es 0%, el momio ya sabe todo lo que el Elo sabe y ahí el bot se guía por el mercado. La NBA y el tenis aprenden con los partidos que ve el bot (sus sitios no permiten descargar historia).</div></div>`;
 }
 
 // Conocimiento acumulado: calibración de probabilidades y base de datos de apuestas liquidadas.

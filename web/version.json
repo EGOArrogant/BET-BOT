@@ -1,8 +1,12 @@
 {
-  "version": "2.7.2",
-  "date": "2026-10-21",
+  "version": "2.8.0",
+  "date": "2026-10-23",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "NFL, MLB y LMB con modelo Elo entrenado en temporadas pasadas (nflverse y la API oficial de MLB), con backtesting sin trampa",
+    "NFL medida contra el momio de cierre: el mercado es más preciso, así que el bot le da 0% de peso al modelo ahí",
+    "NBA y tenis aprenden con los partidos que ve el bot y se activan solos al juntar suficientes",
+    "Tabla \"Otros deportes\" en Banca → Modelo entrenado; re-entrenamiento automático cada 24 h",
     "Arreglado: el servidor ya no se detiene si data/state.rev o data/state.json quedan dañados por un apagón o un cierre a la mitad; los repara solo con la copia de la base de datos",
     "Los archivos de datos, tus claves (.env) y el modelo entrenado se guardan de forma segura (archivo temporal y reemplazo de golpe), para que un apagón no los deje vacíos",
     "Si se acaban los créditos de The Odds API, el bot vuelve a revisar solo cuando se renuevan (sin gastar créditos al revisar)",

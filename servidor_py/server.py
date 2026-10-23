@@ -39,9 +39,10 @@ import push as pushmod  # noqa: E402
 import bot as botmod  # noqa: E402
 from historico import FD_LINKS, Historico  # noqa: E402
 from modelos import Modelos  # noqa: E402
+from ratings import Ratings  # noqa: E402
 from precios import Precios  # noqa: E402
 
-SERVER_VERSION = "3.3.1"
+SERVER_VERSION = "3.4.0"
 ENGINE = "python"
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -91,6 +92,7 @@ LOCAL_IPS: set[str] = {"127.0.0.1", "::1"}
 runner: botmod.BotRunner | None = None
 hist: Historico
 modelos: Modelos
+ratings: Ratings
 precios: Precios
 
 
@@ -296,6 +298,11 @@ async def models_loop():
                 print("Modelo de fútbol: entrenando con temporadas pasadas (tarda unos minutos)...")
                 r = await asyncio.to_thread(modelos.train)
                 print(f"Modelo de fútbol: {'listo' if r.get('ok') else r.get('error', 'sin cambios')} ({r.get('seconds', 0)} s)")
+            age_r = ratings.age_hours()
+            if age_r is None or age_r > 24:
+                print("Modelos de NFL, MLB, LMB, NBA y tenis: entrenando con temporadas pasadas...")
+                r = await asyncio.to_thread(ratings.train)
+                print(f"Modelos de rating: {'listos' if r.get('ok') else r.get('error', 'sin cambios')} ({r.get('seconds', 0)} s)")
         except Exception as e:
             print(f"Modelo de fútbol: {e}")
         await asyncio.sleep(3600)
@@ -823,18 +830,30 @@ async def precios_actualizar(req: Request):
 # ---------- modelos entrenados (fase 3) ----------
 @app.get("/api/modelos/estado")
 async def modelos_estado():
-    return j({"busy": modelos.busy, "error": modelos.error, "ageHours": modelos.age_hours(), "info": modelos.info,
-              "data": hist.summary(), "links": FD_LINKS})
+    return j({"busy": modelos.busy or ratings.busy, "error": modelos.error or ratings.error, "ageHours": modelos.age_hours(), "info": modelos.info,
+              "data": hist.summary(), "links": FD_LINKS,
+              "ratings": {"info": ratings.info, "data": ratings.juegos.summary(), "ageHours": ratings.age_hours()}})
 
 
 @app.post("/api/modelos/entrenar")
 async def modelos_entrenar(req: Request):
     if (deny := pc_only(req)):
         return deny
-    if modelos.busy:
+    if modelos.busy or ratings.busy:
         return j({"started": False, "busy": True})
-    asyncio.create_task(asyncio.to_thread(modelos.train))
+
+    async def both():
+        await asyncio.to_thread(modelos.train)
+        await asyncio.to_thread(ratings.train)
+    asyncio.create_task(both())
     return j({"started": True})
+
+
+@app.post("/api/modelos/rating")
+async def modelos_rating(req: Request):
+    b = await body_json(req)
+    items = b.get("items") or []
+    return j({"preds": [ratings.predict(it.get("leagueId"), it.get("home"), it.get("away"), it.get("date"), bool(it.get("neutral"))) for it in items[:300]]})
 
 
 @app.post("/api/modelos/futbol")
@@ -850,7 +869,8 @@ async def historico_resultados(req: Request):
     if (deny := pc_only(req)):
         return deny
     b = await body_json(req)
-    return j({"saved": hist.add_bot_results(b.get("items") or [])})
+    items = b.get("items") or []
+    return j({"saved": hist.add_bot_results(items) + ratings.juegos.add_bot(items)})
 
 
 @app.post("/api/historico/subir")
@@ -928,6 +948,8 @@ def init() -> None:
     global hist, modelos
     hist = Historico(DATA)
     modelos = Modelos(DATA, hist)
+    global ratings
+    ratings = Ratings(DATA, hist)
     global precios
     precios = Precios(DATA, read_env, os.environ.get("BETBOT_ODDS_BASE") or "https://api.the-odds-api.com/v4")
     rep = store.sync_from_files()

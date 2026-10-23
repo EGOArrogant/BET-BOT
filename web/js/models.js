@@ -258,9 +258,21 @@ function fightModel(ev) {
 export function modelEvent(ev, table, liveWinProb) {
   if (ev.sport === 'mma' || ev.sport === 'boxing') return fightModel(ev);
   if (ev.sport === 'soccer') return soccerModel(ev, table);
-  if (ev.sport === 'tennis') return tennisModel(ev, table);
   if (ev.sport === 'esports') return esportsModel(ev, table);
-  return usModel(ev, table, liveWinProb);
+  return withRating(ev, ev.sport === 'tennis' ? tennisModel(ev, table) : usModel(ev, table, liveWinProb));
+}
+
+// NFL, NBA, MLB, LMB y tenis: se mezcla el Elo entrenado del servidor de Python con el modelo de la app
+// (50%, 70% si la app no tiene datos propios). Antes del partido; en vivo manda el marcador.
+function withRating(ev, m) {
+  const py = ev.pyRating;
+  if (!py || !m.pre || m.pre.home == null) return m;
+  const w = m.known ? 0.5 : 0.7;
+  const home = (1 - w) * m.pre.home + w * py.home;
+  m.pre = { ...m.pre, home, away: 1 - home };
+  m.known = true;
+  m.py = { ...py, w };
+  return m;
 }
 
 const LABELS = { home: 'Local', away: 'Visitante', draw: 'Empate', over: 'Más de', under: 'Menos de' };
@@ -308,7 +320,8 @@ export function selections(ev, model, settings, weights) {
   let w = model.known ? (weights?.[ev.sport] ?? settings.modelWeight ?? 0.35) * (LEAGUE_WEIGHT[ev.leagueId] ?? 1) : 0;
   // Fútbol con modelo entrenado: el backtesting contra el momio dice cuánto peso le conviene al modelo en esta
   // liga. Si el mercado ya sabe todo (peso 0%), el bot se guía por el mercado y no inventa "valor".
-  if (ev.sport === 'soccer' && ev.pyModel?.maxW != null) w = Math.min(w, ev.pyModel.maxW);
+  const maxW = ev.sport === 'soccer' ? ev.pyModel?.maxW : ev.pyRating?.maxW;
+  if (maxW != null) w = Math.min(w, maxW);
   const out = [];
   const isLive = ev.state === 'in';
   const probs = isLive && model.live ? model.live : model.pre;
