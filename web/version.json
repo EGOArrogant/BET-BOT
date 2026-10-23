@@ -1,8 +1,9 @@
 {
-  "version": "2.11.0",
+  "version": "2.11.1",
   "date": "2026-10-23",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Fecha y hora del partido en cada apuesta: en la tarjeta (\"Partido: …\"), en \"Por colocar en tu casa\", en la bitácora y en los avisos al celular",
     "Apuestas abiertas en tiempo real: en cuanto termina el partido se marcan ganadas o perdidas (revisión cada 30 s de las ligas con apuestas en juego y cada 2 min de partidos que ya no salen en la lista), y el celular se entera en segundos con aviso",
     "Cobro anticipado con datos reales: momio actual en tu casa, cobro estimado (monto × momio apostado ÷ momio actual, menos el descuento de la casa) y casilla para escribir la oferta real de tu casa",
     "Con cada oferta que capturas el bot aprende cuánto descuenta cada casa al cobrar antes, y te dice si la oferta es justa",

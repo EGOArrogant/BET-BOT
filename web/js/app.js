@@ -321,7 +321,7 @@ B.onSettled((b, ev) => {
     status: b.status, finalScore: b.finalScore || null, settledBy: b.settledBy || 'auto',
     sharpSide: smart?.best || null, lineValue: !!b.lineValue, lineBook: b.lineValue?.book || null, fairOdds: b.lineValue?.fairOdds || null, profit: b.status === 'void' ? 0 : Math.round(((b.payout || 0) - b.stake) * 100) / 100,
   });
-  pushFeed({ kind: b.status, k: ev ? ev.leagueId + ':' + ev.id : null, text: `${b.status === 'won' ? '✅ Ganaste' : b.status === 'lost' ? '❌ Perdiste' : '↩️ Anulada'}: ${b.label} · ${b.eventName}${b.finalScore ? ' · ' + b.finalScore : ''}${b.status === 'won' ? ` · +${money(b.payout - b.stake)}` : b.status === 'lost' ? ` · −${money(b.stake)}` : ''}` });
+  pushFeed({ kind: b.status, k: ev ? ev.leagueId + ':' + ev.id : null, text: `${b.status === 'won' ? '✅ Ganaste' : b.status === 'lost' ? '❌ Perdiste' : '↩️ Anulada'}: ${b.label} · ${b.eventName} (${B.matchWhen(b.eventDate)})${b.finalScore ? ' · ' + b.finalScore : ''}${b.status === 'won' ? ` · +${money(b.payout - b.stake)}` : b.status === 'lost' ? ` · −${money(b.stake)}` : ''}` });
   flushLedger();
 });
 async function flushLedger() {
@@ -1314,10 +1314,10 @@ function betCard(b, { compact = false } = {}) {
       <div class="note">${c.offer ? `La oferta equivale a un momio de <b>${dec(c.impliedOdds)}</b> (la casa le da ${pct(1 / c.impliedOdds)} de ganar; el bot calcula ${pct(c.p)}). ${c.good ? '✅ Oferta justa.' : '⚠️ Te descuenta más del 5% del valor justo.'} ` : ''}${cashOutSuggested(c) ? '💸 Va ganando y el cobro deja ganancia: cobrar la asegura.' : c.live && c.p < 0.25 ? 'Va perdiendo: si te ofrecen algo cercano al valor justo, recuperar parte puede tener sentido.' : c.p >= 0.85 ? 'Muy probable que gane: mantenerla suele valer más que cobrar.' : 'Sin cambios importantes: normalmente conviene mantenerla.'}${bk ? ` · ${esc(bk.name)} ${bk.cashout === true ? 'ofrece cobro anticipado' : '(cobro anticipado por verificar)'}` : ''}</div></div>` : '';
   const cashDone = b.status === 'cashout' && b.cashout ? `<div class="note">💰 ${b.cashout.real ? 'Oferta real de la casa' : 'Monto estimado'}${b.cashout.nowOdds ? ` · momio en ese momento ${dec(b.cashout.nowOdds)}` : ''}${b.cashout.p != null ? ` · prob. del bot ${pct(b.cashout.p)}` : ''}</div>` : '';
   return `<div class="bet-card glass ${s.cls}">
-    <div class="bet-top"><span class="bet-state">${s.icon} ${s.text}</span><span class="note">${esc(SOURCE_LABEL[b.source] || b.source)} · ${esc(lg?.short || '')} · ${new Date(b.placedAt).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}</span></div>
+    <div class="bet-top"><span class="bet-state">${s.icon} ${s.text}</span><span class="note">${esc(SOURCE_LABEL[b.source] || b.source)} · ${esc(lg?.short || '')} · apostada ${new Date(b.placedAt).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}</span></div>
     <div class="bet-title">${esc(b.label)} <span class="note">· ${esc(b.market)}</span></div>
     <div class="note">${esc(b.home)} vs ${esc(b.away)}${b.finalScore ? ` · final ${esc(b.finalScore)}` : ''}${live}</div>
-    ${b.eventDate ? `<div class="bet-when">🗓️ ${esc(new Date(b.eventDate).toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' }))} · ⏰ ${esc(new Date(b.eventDate).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }))}</div>` : ''}
+    ${b.eventDate ? `<div class="bet-when">🗓️ Partido: ${esc(new Date(b.eventDate).toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' }))} · ⏰ ${esc(new Date(b.eventDate).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }))}</div>` : ''}
     <div class="bet-nums"><div><span>Monto</span><b>${money(b.stake)}</b></div><div><span>Momio</span><b>${dec(b.odds)}</b></div><div><span>${resultLabel}</span>${result}</div></div>
     ${cashBlock}${cashDone}
     ${b.status === 'pending' && !compact ? `<div class="bet-actions">${bk ? `<span class="tag" style="background:${bk.color};color:#fff">⭐ ${esc(bk.name)}</span>` : ''}${b.placedReal ? '<span class="tag value">Colocada</span>' : ''}<span class="spacer"></span>
@@ -2574,7 +2574,7 @@ function placeFromSlip(id) {
 function toPlaceRow(b) {
   const bk = K.bookById(b.book);
   return `<div class="row"><span class="icon-sq" style="background:${bk?.color || 'var(--text-3)'}">${esc(bk ? bk.name[0] : '?')}</span>
-    <div class="grow"><b>${esc(b.label)}</b> <span class="note">· ${esc(b.market)}</span><div class="meta">${esc(b.home)} vs ${esc(b.away)} · ${money(b.stake)} @ ${dec(b.odds)}${b.minOdds ? ` · acepta desde ${dec(b.minOdds)} (${toAmerican(b.minOdds)})` : ''}${bk ? ' · ' + esc(bk.name) : ''}</div></div>
+    <div class="grow"><b>${esc(b.label)}</b> <span class="note">· ${esc(b.market)}</span><div class="meta">${esc(b.home)} vs ${esc(b.away)} · 🗓️ ${esc(B.matchWhen(b.eventDate))} · ${money(b.stake)} @ ${dec(b.odds)}${b.minOdds ? ` · acepta desde ${dec(b.minOdds)} (${toAmerican(b.minOdds)})` : ''}${bk ? ' · ' + esc(bk.name) : ''}</div></div>
     ${bk ? `<a class="btn small" href="${esc(bk.url)}" target="_blank" rel="noopener">Abrir ↗</a>` : ''}<button class="btn small primary" data-placed="${b.id}">Ya la coloqué</button></div>`;
 }
 

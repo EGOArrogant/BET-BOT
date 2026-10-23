@@ -203,6 +203,13 @@ export const betsToday = () => {
   return state.bets.filter((b) => new Date(b.placedAt).toDateString() === d).length;
 };
 
+// Fecha y hora del partido en texto corto: "sáb 24 oct, 18:00".
+export function matchWhen(d) {
+  const t = new Date(d);
+  if (isNaN(t)) return 'fecha por confirmar';
+  return `${t.toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short' })}, ${t.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}`;
+}
+
 export function placeBet({ ev, sel, stake, odds, oddsMx = null, source = 'manual', reasoning = '', book = null, quotes = {} }) {
   const finalOdds = Number(oddsMx || odds);
   stake = Math.round(Number(stake));
@@ -225,7 +232,7 @@ export function placeBet({ ev, sel, stake, odds, oddsMx = null, source = 'manual
   for (const [b, q] of Object.entries(quotes)) if (q) recordQuote(state, { book: b, sport: ev.sport, market: sel.market, odds: q, refOdds: odds });
   state.bets.unshift(bet);
   state.bankroll = round2(state.bankroll - stake);
-  log(`${source === 'manual' ? 'Apuesta' : 'Bot (' + source + ')'}: $${stake} a ${bet.label} @ ${finalOdds.toFixed(2)} — ${ev.name}`, 'bet');
+  log(`${source === 'manual' ? 'Apuesta' : 'Bot (' + source + ')'}: $${stake} a ${bet.label} @ ${finalOdds.toFixed(2)} — ${ev.name} · 🗓️ ${matchWhen(ev.date)}`, 'bet');
   return bet;
 }
 
