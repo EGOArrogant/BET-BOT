@@ -44,7 +44,7 @@ from aprendizaje import Aprendizaje  # noqa: E402
 import clima as climamod  # noqa: E402
 from precios import Precios  # noqa: E402
 
-SERVER_VERSION = "3.5.0"
+SERVER_VERSION = "3.6.0"
 ENGINE = "python"
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -858,6 +858,36 @@ async def modelos_entrenar(req: Request):
         await asyncio.to_thread(ratings.train)
     asyncio.create_task(both())
     return j({"started": True})
+
+
+# Casas de The Odds API → casas de la app. Solo las que el bot conoce.
+APP_BOOK = {"caliente": "caliente", "codere": "codere", "bet365": "bet365", "betano": "betano", "betway": "betway", "playdoit": "playdoit",
+            "strendus": "strendus", "pinnacle": "pinnacle", "bwin": "bwin", "betfair_ex_eu": "betfair", "betfair_ex_uk": "betfair"}
+
+
+@app.get("/api/precios/casas")
+async def precios_casas():
+    """Últimos momios reales de cada casa en los partidos próximos (de la caché: no gasta créditos)."""
+    import datetime as _dt
+    import precios as _pr
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    out = []
+    for ev, e in (await asyncio.to_thread(precios.latest, "WHERE f.inicio > ?", (now,))).items():
+        casas = {}
+        for casa, lados in e["casas"].items():
+            app_id = APP_BOOK.get(casa)
+            if app_id and app_id not in casas:
+                casas[app_id] = lados
+        sharp = e["casas"].get(_pr.SHARP)
+        fair = None
+        if sharp:
+            lados = ["home", "draw", "away"] if "draw" in sharp else ["home", "away"]
+            nv = _pr.no_vig([sharp.get(l) for l in lados])
+            fair = dict(zip(lados, nv)) if nv else None
+        if casas:
+            out.append({"id": ev, "leagueId": e["liga"], "commence": e["inicio"], "home": e["local"], "away": e["visita"], "casas": casas, "fair": fair,
+                        "updated": int(e["t"] * 1000)})
+    return j({"events": out})
 
 
 @app.get("/api/aprendizaje/patrones")

@@ -386,11 +386,12 @@ export function featuresOf(x) {
   if (x.src) f.fuente = String(x.src);
   f.momento = x.live ? 'en vivo' : 'previo';
   if (x.sharp) f.sharps = x.sharp;
+  if (x.p != null) f.probabilidad = x.p < 0.35 ? 'menos de 35%' : x.p < 0.5 ? '35 a 50%' : x.p < 0.6 ? '50 a 60%' : '60% o más';
   return f;
 }
 function learned(ev, s) {
   if (!PATTERNS.length) return null;
-  const f = featuresOf({ sport: ev.sport, leagueId: ev.leagueId, market: s.market, odds: s.odds, pModel: s.pModel, pMarket: s.pMarket, src: s.oddsSource, live: ev.state === 'in' });
+  const f = featuresOf({ sport: ev.sport, leagueId: ev.leagueId, market: s.market, odds: s.odds, pModel: s.pModel, pMarket: s.pMarket, src: s.oddsSource, live: ev.state === 'in', p: s.p });
   const hit = PATTERNS.filter((p) => p.conds.every(([k, v]) => f[k] === v));
   if (!hit.length) return null;
   const block = hit.find((p) => p.action === 'bloqueado');

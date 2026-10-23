@@ -110,8 +110,25 @@ S.lv = { spots: [], status: null, t: 0 };
 async function loadLineValues(force = false) {
   if (S.cfg?.engine !== 'python' || (!force && Date.now() - S.lv.t < 5 * 60_000)) return;
   try { const r = await (await fetch('/api/precios/valor', { cache: 'no-store' })).json(); S.lv = { spots: r.spots || [], status: r.status, t: Date.now() }; } catch {}
+  try { S.bk = (await (await fetch('/api/precios/casas', { cache: 'no-store' })).json()).events || []; } catch { S.bk = S.bk || []; }
+}
+// Momios reales recientes de cada casa para un partido (de The Odds API, sin gastar créditos extra).
+function attachBookOdds(ev) {
+  ev.bookOdds = null; ev.fairBook = null;
+  if (ev.state === 'post' || !S.bk?.length) return;
+  const t = new Date(ev.date).getTime();
+  const m = S.bk.find((x) => x.leagueId === ev.leagueId && Math.abs(new Date(x.commence).getTime() - t) < 12 * 3600_000
+    && nameScore(ev.home.name, x.home) > 0 && nameScore(ev.away.name, x.away) > 0);
+  if (m) { ev.bookOdds = m.casas; ev.fairBook = m.fair; }
+}
+// Momio más cercano al real en cada casa para una selección (real → aprendido → estimado).
+function bookEst(ev, sel) {
+  const ml = sel.market === '1X2' || sel.market === 'Ganador';
+  const fairP = (ml && ev.fairBook?.[sel.pick]) || sel.pMarket || sel.p;
+  return K.bookEstimates(B.getState(), { sport: ev.sport, pick: sel.pick, fairP, refOdds: sel.odds, real: ml ? ev.bookOdds : null, market: sel.market });
 }
 function attachLineValue(ev) {
+  attachBookOdds(ev);
   if (ev.state === 'post' || !S.lv.spots.length) { ev.lineValue = null; return; }
   const t = new Date(ev.date).getTime();
   const mine = S.lv.spots.filter((x) => x.leagueId === ev.leagueId && Math.abs(new Date(x.commence).getTime() - t) < 12 * 3600_000
@@ -359,7 +376,6 @@ function practiceBets() {
     for (const x of a.sels) {
       if (!x.odds || x.odds < 1.4 || x.odds > 3.6 || x.ev == null) continue; // momios moderados: aprendizaje más estable
       if (x.blocked) continue; // patrón que el bot aprendió que pierde
-      if (st.settings.highHit && x.p < 0.6) continue; // "priorizar acierto": solo probabilidad ≥ 60%
       if (segs[B.segKey(a.ev.sport, x.market, x.odds)]?.status === 'bloqueado') continue;
       cands.push({ a, sel: x });
     }
@@ -375,10 +391,13 @@ function practiceBets() {
     if ((perSport[c.a.ev.sport] || 0) >= 2) continue; // variedad: máximo 2 por deporte al día
     perSport[c.a.ev.sport] = (perSport[c.a.ev.sport] || 0) + 1;
     try {
-      const book = K.recommendBook(st, { sport: c.a.ev.sport, p: c.sel.p, stake })?.best?.book;
+      // Se registra al momio de la casa recomendada (el más cercano al real), no al de referencia sin margen.
+      const rec = K.recommendBook(st, { sport: c.a.ev.sport, p: c.sel.p, stake, est: bookEst(c.a.ev, c.sel) });
+      const book = rec?.best?.book, real = rec?.best?.odds || null;
+      if (real && c.sel.p * real - 1 < -0.04) continue; // con el momio real de la casa ya no conviene
       B.placeBet({
-        ev: c.a.ev, sel: c.sel, stake, odds: c.sel.odds, source: 'práctica', book: book?.id || null,
-        reasoning: `Práctica diaria: mejor opción disponible hoy (EV ${pct(c.sel.ev, 1)}, prob. ${pct(c.sel.p)}, precio ${c.sel.oddsSource || 'referencia'})`,
+        ev: c.a.ev, sel: c.sel, stake, odds: c.sel.odds, oddsMx: real, source: 'práctica', book: book?.id || null,
+        reasoning: `Práctica diaria: mejor opción disponible hoy (prob. ${pct(c.sel.p)}${real ? `, ${book.name} ${dec(real)} · ${K.SRC_LABEL[rec.best.src]}` : `, precio ${c.sel.oddsSource || 'referencia'}`})`,
       });
       used.add(c.a.ev.id); room--;
       toast(`🎓 Práctica: $${stake} a ${c.sel.label} @ ${dec(c.sel.odds)}`);
@@ -397,7 +416,7 @@ async function valueBets() {
     const hrs = (new Date(a.ev.date) - Date.now()) / 3600000;
     if (hrs > 36 || hrs < 0.05) continue;
     // Lo aprendido con las apuestas sombra: no apuesta en segmentos que han dado pérdidas.
-    const best = a.sels.filter((x) => x.value && !(s.highHit && x.p < 0.6) && segs[B.segKey(a.ev.sport, x.market, x.odds)]?.status !== 'bloqueado').sort((x, y) => y.ev - x.ev)[0];
+    const best = a.sels.filter((x) => x.value && segs[B.segKey(a.ev.sport, x.market, x.odds)]?.status !== 'bloqueado').sort((x, y) => y.ev - x.ev)[0];
     if (best) cands.push({ a, sel: best });
   }
   cands.sort((x, y) => y.sel.ev - x.sel.ev);
@@ -428,9 +447,11 @@ async function valueBets() {
     }
     if (!stake) continue;
     try {
-      const rec = K.recommendBook(st, { sport: c.a.ev.sport, p: sel.p, stake });
-      const book = rec?.best?.book;
-      B.placeBet({ ev: c.a.ev, sel, stake, odds: sel.odds, source, reasoning, book: book?.id || null });
+      const rec = K.recommendBook(st, { sport: c.a.ev.sport, p: sel.p, stake, est: bookEst(c.a.ev, sel) });
+      const book = rec?.best?.book, real = rec?.best?.odds || null;
+      // Con el margen real de la casa, ¿sigue habiendo valor? Si no, no se apuesta (evita valor "de papel").
+      if (real && sel.p * real - 1 < M.requiredEV(s.minEV, real)) { B.log(`Sin valor con el momio de ${book.name} (${dec(real)}): ${sel.label}`, 'info'); continue; }
+      B.placeBet({ ev: c.a.ev, sel, stake, odds: sel.odds, oddsMx: real, source, reasoning, book: book?.id || null });
       if (book) B.log(`→ Colócala en ${book.name} solo si paga ${dec(sel.minOdds)} (${toAmerican(sel.minOdds)}) o más`, 'bet');
       toast(`🤖 Bot apostó $${stake} a ${sel.label}${book ? ' · ' + book.name : ''}`);
       room--;
@@ -668,7 +689,6 @@ function botWidget() {
       <div class="row"><div class="icon-sq" style="background:var(--green-fill)">🤖</div><div class="grow"><b>Apostar automáticamente</b><div class="meta">Solo apuestas con EV ≥ ${pct(s.minEV)} · máx. ${s.maxBetsPerDay} al día${s.autopilot ? (s.autopilotDevice === B.SERVER_DEVICE ? ' · corre en el bot 24/7 de tu PC (no necesitas la app abierta)' : B.isAutopilotHere() ? ' · corre en este dispositivo (mantén esta pestaña abierta)' : ' · corre en otro dispositivo') : ''}</div></div>${s.autopilot && !B.isAutopilotHere() && !(s.autopilotDevice === B.SERVER_DEVICE && S.botStatus?.healthy) ? '<button class="btn small" data-takeover>Correr aquí</button>' : ''}${sw('sw-auto', s.autopilot)}</div>
       ${bot247Row()}
       <div class="row"><div class="icon-sq" style="background:var(--purple)">✦</div><div class="grow"><b>Confirmar con IA</b><div class="meta">${aiReady() ? 'Claude revisa cada apuesta y busca noticias' : 'Agrega tu clave de Anthropic en Más → Ajustes'}</div></div>${sw('sw-ai', s.aiConfirm, !aiReady())}</div>
-      <div class="row"><div class="icon-sq" style="background:var(--green-fill)">🎯</div><div class="grow"><b>Priorizar acierto</b><div class="meta">Solo apuestas con probabilidad de 60% o más: ganas más seguido, pero cobras menos por apuesta y hay menos oportunidades</div></div>${sw('sw-highhit', !!s.highHit)}</div>
       <div class="row"><div class="icon-sq" style="background:var(--orange-fill)">🎓</div><div class="grow"><b>Modo práctica diaria</b><div class="meta">Al menos ${s.practicePerDay} apuestas ficticias al día de $${s.practiceStake ?? 10} con las mejores opciones disponibles, para aprender desde hoy · hoy: ${st.bets.filter((b) => b.source === 'práctica' && new Date(b.placedAt).toDateString() === new Date().toDateString()).length}/${s.practicePerDay}</div></div>${sw('sw-practice', s.practiceMode)}</div>
       <div class="row"><div class="icon-sq" style="background:var(--blue)">⏱</div><div class="grow"><b>Escaneo</b><div class="meta">Cada ${s.scanMinutes} min · última ${S.lastUpdate ? new Date(S.lastUpdate).toLocaleTimeString('es-MX') : '—'}</div></div><button class="btn small" id="scan-now">Escanear</button></div>
     </div>
@@ -1287,9 +1307,10 @@ function betCard(b, { compact = false } = {}) {
     <div class="bet-top"><span class="bet-state">${s.icon} ${s.text}</span><span class="note">${esc(SOURCE_LABEL[b.source] || b.source)} · ${esc(lg?.short || '')} · ${new Date(b.placedAt).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}</span></div>
     <div class="bet-title">${esc(b.label)} <span class="note">· ${esc(b.market)}</span></div>
     <div class="note">${esc(b.home)} vs ${esc(b.away)}${b.finalScore ? ` · final ${esc(b.finalScore)}` : ''}${live}</div>
+    ${b.eventDate ? `<div class="bet-when">🗓️ ${esc(new Date(b.eventDate).toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' }))} · ⏰ ${esc(new Date(b.eventDate).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }))}</div>` : ''}
     <div class="bet-nums"><div><span>Monto</span><b>${money(b.stake)}</b></div><div><span>Momio</span><b>${dec(b.odds)}</b></div><div><span>${resultLabel}</span>${result}</div></div>
     ${cashBlock}
-    ${b.status === 'pending' && !compact ? `<div class="bet-actions">${bk ? `<span class="tag" style="background:${bk.color};color:#fff">${esc(bk.name)}</span>` : ''}${b.placedReal ? '<span class="tag value">Colocada</span>' : ''}<span class="spacer"></span>
+    ${b.status === 'pending' && !compact ? `<div class="bet-actions">${bk ? `<span class="tag" style="background:${bk.color};color:#fff">⭐ ${esc(bk.name)}</span>` : ''}${b.placedReal ? '<span class="tag value">Colocada</span>' : ''}<span class="spacer"></span>
       ${c ? `<button class="btn small ${cashOutSuggested(c) ? 'gold' : ''}" data-cashout="${b.id}" data-amount="${(c.fair * 0.95).toFixed(2)}">Cobrar ${money(c.fair * 0.95)}</button>` : ''}
       <button class="btn small" data-mx="${b.id}">Momio real</button><button class="btn small danger" data-cancel="${b.id}">Anular</button></div>` : ''}
   </div>`;
@@ -1501,6 +1522,7 @@ function patternText(conds) {
     if (k === 'fuente') return `precio de ${v}`;
     if (k === 'momento') return v === 'en vivo' ? 'en vivo' : 'antes del partido';
     if (k === 'sharps') return `con los ${v}`;
+    if (k === 'probabilidad') return `probabilidad ${v}`;
     return `${FEAT_LABEL[k] || k} ${v}`;
   }).join(' · ');
 }
@@ -1516,7 +1538,7 @@ function errorsLearned() {
     <p class="note">Revisó <b>${L.analyzed}</b> apuestas resueltas (${L.byKind?.apuesta || 0} reales y ${L.byKind?.sombra || 0} sombra). Un patrón solo cuenta con ${L.rules?.minN || 20}+ casos y una diferencia clara entre lo que ganó y lo que esperaba: un par de derrotas no bloquean nada. Si un patrón bloqueado mejora, se desbloquea solo (se sigue anotando en sombra).</p>
     ${L.patterns?.length ? `<div class="list">${L.patterns.map(row).join('')}</div>` : '<div class="empty">Todavía no hay patrones con evidencia suficiente de error.</div>'}
     ${L.good?.length ? `<h3 class="mt">Lo que sí le funciona</h3><div class="list">${L.good.map(row).join('')}</div>` : ''}
-    <div class="note mt">Ojo: ningún modelo asegura la mayoría de apuestas ganadas. Para ganar más seguido existe "Priorizar acierto" (Inicio → Piloto), pero lo que deja dinero a la larga es apostar cuando el momio paga más que la probabilidad real (CLV positivo).</div></div>`;
+    <div class="note mt">El bot aplica esto solo, sin que tengas que activar nada: si las apuestas de baja probabilidad, de cierto deporte o de cierto rango de momio le salen peor de lo esperado, deja de tomarlas o les baja la probabilidad. Ojo: ningún modelo asegura la mayoría de apuestas ganadas; lo que deja dinero a la larga es apostar cuando el momio paga más que la probabilidad real.</div></div>`;
 }
 
 // ---------- Reporte de aprendizaje (apuestas sombra) ----------
@@ -2447,16 +2469,18 @@ function slipCalc(item) {
   const ref = ev.state === 'pre' ? sel.odds : null;
   const quotes = item.quotes || {};
   const stake = Number(item.stake) || (ref ? B.suggestStake(sel.p, ref) : 0) || st.settings.minStake;
-  const rec = K.recommendBook(st, { sport: ev.sport, p: sel.p, stake, quotes });
+  const est = ev.state === 'pre' ? bookEst(ev, sel) : {};
+  const rec = K.recommendBook(st, { sport: ev.sport, p: sel.p, stake, quotes, est });
   const chosen = rec?.reason === 'quotes' ? rec.best : null;
-  const odds = chosen?.odds || ref;
-  return { a, ev, sel, ref, quotes, stake, rec, chosen, odds, evv: odds ? sel.p * odds - 1 : null };
+  // Momio para calcular: el que capturaste; si no, el de la casa recomendada (real o estimado); si no, la referencia.
+  const odds = chosen?.odds || rec?.best?.odds || ref;
+  return { a, ev, sel, ref, quotes, stake, rec, chosen, odds, est, evv: odds ? sel.p * odds - 1 : null };
 }
 
 function slipCard(item) {
   const c = slipCalc(item);
   if (!c) return `<div class="slip-card glass"><div class="flex"><div class="grow"><b>${esc(item.label)}</b><div class="note">${esc(item.name)} · el partido ya no está en la lista</div></div><button class="close-x" data-slipdel="${item.id}">✕</button></div></div>`;
-  const { ev, sel, ref, quotes, stake, rec, chosen, odds, evv } = c;
+  const { ev, sel, ref, quotes, stake, rec, chosen, odds, evv, est } = c;
   const st = B.getState();
   const books = K.enabledBooks(st);
   const lg = D.leagueById(ev.leagueId);
@@ -2468,15 +2492,16 @@ function slipCard(item) {
       <button class="close-x" data-slipdel="${item.id}" title="Quitar del boleto">✕</button></div>
     <div class="opp-nums mt"><div>Prob. del bot<b>${pct(sel.p, 1)}</b></div><div>Momio mínimo<b>${dec(sel.minOdds)} <span class="note">${toAmerican(sel.minOdds)}</span></b></div><div>Referencia<b>${dec(ref)}</b></div></div>
     ${groups.length ? groups.map(({ g, list }) => `<div class="note mt"><b>${K.GROUP_LABEL[g]}</b>${g === 'intl' ? ' · sin protección legal en México' : ''}</div>
-      <div class="quote-grid">${list.map((b) => `<label class="quote ${chosen?.book.id === b.id ? 'best' : ''}"><span class="icon-sq" style="background:${b.color}">${esc(b.name[0])}</span><span class="qn">${esc(b.name)}</span>
-        <input class="input" data-slipquote="${item.id}|${b.id}" value="${quotes[b.id] ? dec(quotes[b.id]) : ''}" placeholder="${ref ? toAmerican(ref) : '+150'}" inputmode="decimal"></label>`).join('')}</div>`).join('')
+      <div class="quote-grid">${list.map((b) => { const e = est?.[b.id]; const isBest = rec?.best?.book.id === b.id;
+        return `<label class="quote ${isBest ? 'best' : ''}"><span class="icon-sq" style="background:${b.color}">${esc(b.name[0])}</span><span class="qn">${esc(b.name)}${isBest || (e && !quotes[b.id]) ? `<span class="note qe">${isBest ? '<b class="qrec">⭐ Recomendada</b>' : ''}${e && !quotes[b.id] ? `${isBest ? ' · ' : ''}${dec(e.odds)} ${esc(e.src === 'real' ? 'real' : e.src === 'aprendido' ? 'aprendido' : 'estimado')}` : ''}</span>` : ''}</span>
+        <input class="input" data-slipquote="${item.id}|${b.id}" value="${quotes[b.id] ? dec(quotes[b.id]) : ''}" placeholder="${e ? dec(e.odds) : ref ? toAmerican(ref) : '+150'}" inputmode="decimal"></label>`; }).join('')}</div>`).join('')
       : '<div class="warn mt">Activa tus casas en Más → Mis casas para comparar momios.</div>'}
     <div class="flex mt"><button class="btn small" data-research="${item.id}" ${aiReady() ? '' : 'disabled'}>🔎 Buscar momios en internet</button>${aiReady() ? '<span class="note">Claude busca los momios publicados por cada casa</span>' : '<span class="note">Requiere la clave de Anthropic (Más → Ajustes)</span>'}</div>
     ${researchBlock(S.oddsResearch.get(item.id))}
     ${rec?.best ? `<div class="rec mt"><span class="icon-sq" style="background:${rec.best.book.color}">${esc(rec.best.book.name[0])}</span><div class="grow"><div class="note">Apuesta en</div><b>${esc(rec.best.book.name)}</b>${rec.best.book.group === 'intl' ? ' <span class="tag gold">internacional</span>' : ''}<div class="note">${esc(K.reasonText(rec, D.SPORT_NAME[ev.sport].toLowerCase()))}</div></div><a class="btn small" href="${esc(rec.best.book.url)}" target="_blank" rel="noopener">Abrir ↗</a></div>` : ''}
     <div class="flex mt" style="align-items:flex-end"><div class="field" style="width:150px"><label>Monto (MXN)</label><input class="input" type="number" min="1" data-slipstake="${item.id}" value="${stake}"></div>
       <div class="grow ${evv == null ? 'note' : evv >= 0 ? 'ok' : 'warn'}">${odds ? `Momio ${dec(odds)} (${toAmerican(odds)}) · ganas ${money(stake * (odds - 1))} · EV <b>${pct(evv, 1)}</b>${evv < 0 ? ' — sin valor: el bot no la tomaría' : ''}` : 'Escribe el momio de al menos una casa (o búscalo en internet).'}</div></div>
-    <button class="btn primary mt" style="width:100%;padding:13px" data-slipplace="${item.id}" ${odds ? '' : 'disabled'}>Registrar apuesta${chosen ? ' en ' + esc(chosen.book.name) : ''}</button>
+    <button class="btn primary mt" style="width:100%;padding:13px" data-slipplace="${item.id}" ${odds ? '' : 'disabled'}>Registrar apuesta${(chosen || rec?.best)?.book ? ' en ' + esc((chosen || rec.best).book.name) : ''}</button>
   </div>`;
 }
 
@@ -2524,7 +2549,7 @@ function placeFromSlip(id) {
   try {
     const bookId = c.chosen?.book.id || c.rec?.best?.book.id || null;
     const bet = B.placeBet({
-      ev: c.ev, sel: c.sel, stake: c.stake, odds: c.ref, oddsMx: c.chosen?.odds || null, book: bookId,
+      ev: c.ev, sel: c.sel, stake: c.stake, odds: c.ref, oddsMx: c.chosen?.odds || (c.odds !== c.ref ? c.odds : null), book: bookId,
       quotes: c.ref ? c.quotes : {}, source: item.aiStake ? 'IA (manual)' : 'manual',
     });
     B.removeFromSlip(id);
@@ -3101,7 +3126,6 @@ document.addEventListener('change', (e) => {
     render(); if (t.checked) refreshAll();
   }
   if (t.id === 'sw-ai') { B.updateSettings({ aiConfirm: t.checked }); render(); }
-  if (t.id === 'sw-highhit') { B.updateSettings({ highHit: t.checked }); toast(t.checked ? '🎯 Solo apuestas con 60% o más de probabilidad' : 'Prioridad de acierto desactivada'); render(); return; }
   if (t.id === 'sw-practice') {
     B.updateSettings(t.checked ? { practiceMode: true, autopilotDevice: B.getState().settings.autopilotDevice || B.deviceId } : { practiceMode: false });
     B.log(t.checked ? 'Modo práctica diaria activado' : 'Modo práctica diaria en pausa');

@@ -1,11 +1,15 @@
 {
-  "version": "2.9.0",
+  "version": "2.10.0",
   "date": "2026-10-23",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Cada apuesta muestra el día y la hora del partido",
+    "Ya no existe el modo \"Priorizar acierto\": el bot aprende solo si las apuestas de baja probabilidad le salen mal y deja de tomarlas o les baja la probabilidad",
+    "Momio más cercano al real en cada casa mexicana: real (The Odds API) → aprendido con tus capturas → estimado con el margen típico de la casa",
+    "La casa que más paga se resalta como ⭐ Recomendada en el boleto y en cada apuesta",
+    "El piloto y la práctica registran la apuesta al momio realista de la casa (ya no al de referencia sin margen) y no apuestan si con ese momio ya no hay valor",
     "El bot aprende de sus errores: encuentra patrones donde gana menos de lo esperado (con evidencia estadística) y los bloquea o baja su probabilidad",
     "Banca → \"Errores que el bot ya no repite\" y \"Lo que sí le funciona\"; los patrones bloqueados se siguen anotando en sombra para desbloquearse si mejoran",
-    "Nuevo interruptor \"Priorizar acierto\": solo apuestas con probabilidad de 60% o más",
     "Clima a la hora del partido (Open-Meteo, gratis): lluvia, viento y temperatura en fútbol, NFL, MLB y LMB al aire libre; etiqueta en el partido y dato para la IA",
     "NBA con temporadas pasadas mediante balldontlie (clave gratuita en Ajustes)",
     "NFL, MLB y LMB con modelo Elo entrenado en temporadas pasadas (nflverse y la API oficial de MLB), con backtesting sin trampa",

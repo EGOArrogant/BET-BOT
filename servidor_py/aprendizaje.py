@@ -53,6 +53,10 @@ def features(x: dict) -> dict:
     f["momento"] = "en vivo" if x.get("live") else "previo"
     if x.get("sharp"):
         f["sharps"] = x["sharp"]
+    p = x.get("p")
+    if p is not None:
+        # Así el bot aprende solo si las apuestas de baja probabilidad le salen peor de lo esperado.
+        f["probabilidad"] = "menos de 35%" if p < 0.35 else "35 a 50%" if p < 0.5 else "50 a 60%" if p < 0.6 else "60% o más"
     return {k: v for k, v in f.items() if v}
 
 
