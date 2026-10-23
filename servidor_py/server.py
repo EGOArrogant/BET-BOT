@@ -44,7 +44,7 @@ from aprendizaje import Aprendizaje  # noqa: E402
 import clima as climamod  # noqa: E402
 from precios import Precios  # noqa: E402
 
-SERVER_VERSION = "3.6.0"
+SERVER_VERSION = "3.7.0"
 ENGINE = "python"
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -373,6 +373,13 @@ async def config(req: Request):
 async def get_state():
     st, rev = store.get_state()
     return text(st or "null", media="application/json; charset=utf-8", headers={"X-Rev": str(rev)})
+
+
+@app.get("/api/state/rev")
+async def get_state_rev():
+    """Solo la revisión: los dispositivos la consultan cada pocos segundos y bajan el estado completo solo si cambió."""
+    row = store.db.execute("SELECT rev FROM estado WHERE id = 1").fetchone()
+    return j({"rev": row[0] if row else 0})
 
 
 @app.put("/api/state")

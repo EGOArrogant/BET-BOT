@@ -286,12 +286,15 @@ async function refreshAll() {
 // Liquida apuestas de partidos que ya no aparecen en el scoreboard actual.
 async function settleOld() {
   const loaded = new Set(allEvents().filter((e) => e.completed).map((e) => e.id));
-  const old = (x) => !loaded.has(x.eventId) && Date.now() - new Date(x.eventDate).getTime() > 3 * 3600000;
+  const old = (x) => !loaded.has(x.eventId) && Date.now() - new Date(x.eventDate).getTime() > 100 * 60_000;
   // Apuestas reales y apuestas sombra de partidos que ya no aparecen en la lista actual.
   const pend = [...B.pendingBets().filter(old), ...B.pendingShadows().filter(old)];
   const groups = new Map();
   for (const b of pend) groups.set(b.leagueId + '|' + String(b.eventDate).slice(0, 10), b);
-  for (const b of [...groups.values()].slice(0, 12)) {
+  S.oldTry ||= new Map();
+  for (const [k, b] of [...groups.entries()].slice(0, 12)) {
+    if (Date.now() - (S.oldTry.get(k) || 0) < 4 * 60_000) continue; // la misma liga y día, máx. cada 4 min
+    S.oldTry.set(k, Date.now());
     try {
       let evs = await D.getEventsAround(D.leagueById(b.leagueId), b.eventDate);
       // CS2/Valorant: Liquipedia quita los partidos terminados; el resultado se toma de bo3.gg.
@@ -1276,8 +1279,9 @@ const BET_STATE = {
   void: { cls: 'bc-void', icon: '↩️', text: 'Anulada' },
 };
 
-// ¿Conviene cobrar anticipadamente? Solo en vivo, cuando va ganando y aún no es casi segura.
-const cashOutSuggested = (c) => !!c && c.live && c.profit > 0 && c.p < 0.85;
+// ¿Conviene cobrar anticipadamente? Solo en vivo, cuando el cobro deja ganancia, aún no es casi segura
+// y la oferta no es abusiva (al menos 95% del valor justo).
+const cashOutSuggested = (c) => !!c && c.live && c.amount > c.stake && c.p < 0.85 && c.good;
 
 function betStateKey(b, c) {
   if (b.status !== 'pending') return b.status;
@@ -1300,18 +1304,24 @@ function betCard(b, { compact = false } = {}) {
     : b.status === 'void' ? '<b>$0.00</b>' : `<b>${money(b.stake * b.odds)}</b>`;
   const resultLabel = b.status === 'pending' ? 'Cobro si gana' : b.status === 'void' ? 'Devuelto' : 'Resultado';
   const live = c?.live ? `<span class="down"> · ${esc(c.a.ev.detail || 'en vivo')} · ${c.a.ev.home.score ?? 0}-${c.a.ev.away.score ?? 0}</span>` : '';
+  const bkName = bk?.name || 'tu casa';
   const cashBlock = c && !compact ? `<div class="bet-cash ${cashOutSuggested(c) ? 'hot' : ''}">
-      <div class="opp-nums"><div>Prob. actual<b>${pct(c.p)}</b></div><div>Valor justo hoy<b>${money(c.fair)}</b></div><div>Mínimo aceptable<b>${money(c.fair * 0.95)}</b></div></div>
-      <div class="note">${cashOutSuggested(c) ? '💸 Va ganando: si tu casa te ofrece el mínimo aceptable o más, cobrar asegura la ganancia.' : c.live && c.p < 0.25 ? 'Va perdiendo: si te ofrecen algo cercano al valor justo, recuperar parte puede tener sentido.' : c.p >= 0.85 ? 'Muy probable que gane: mantenerla suele valer más que cobrar.' : 'Sin cambios importantes: normalmente conviene mantenerla.'}${bk ? ` · ${esc(bk.name)} ${bk.cashout === true ? 'ofrece cash out' : '(cash out por verificar)'}` : ''}</div></div>` : '';
+      <div class="opp-nums"><div>Momio actual${bk ? ' ' + esc(bk.name) : ''}<b>${dec(c.nowOdds)}</b><small class="note">${esc(c.nowLabel)}</small></div>
+        <div>${c.offer ? 'Oferta real' : 'Cobro estimado'}<b>${money(c.amount)}</b><small class="note">${c.offer ? `hace ${Math.max(1, Math.round((Date.now() - c.offer.t) / 60_000))} min` : c.cfN ? `con ${c.cfN} ofertas tuyas` : 'margen típico'}</small></div>
+        <div>Valor justo (bot)<b>${money(c.fair)}</b><small class="note">prob. ${pct(c.p)}</small></div></div>
+      <label class="cash-offer"><span class="note">¿Cuánto te ofrece ${esc(bkName)} por cobrar ahora? Escríbelo para usar el dato real:</span>
+        <input class="input" data-cashoffer="${b.id}" value="${c.offer ? c.offer.amount.toFixed(2) : ''}" placeholder="${c.offerEst.toFixed(2)}" inputmode="decimal"></label>
+      <div class="note">${c.offer ? `La oferta equivale a un momio de <b>${dec(c.impliedOdds)}</b> (la casa le da ${pct(1 / c.impliedOdds)} de ganar; el bot calcula ${pct(c.p)}). ${c.good ? '✅ Oferta justa.' : '⚠️ Te descuenta más del 5% del valor justo.'} ` : ''}${cashOutSuggested(c) ? '💸 Va ganando y el cobro deja ganancia: cobrar la asegura.' : c.live && c.p < 0.25 ? 'Va perdiendo: si te ofrecen algo cercano al valor justo, recuperar parte puede tener sentido.' : c.p >= 0.85 ? 'Muy probable que gane: mantenerla suele valer más que cobrar.' : 'Sin cambios importantes: normalmente conviene mantenerla.'}${bk ? ` · ${esc(bk.name)} ${bk.cashout === true ? 'ofrece cobro anticipado' : '(cobro anticipado por verificar)'}` : ''}</div></div>` : '';
+  const cashDone = b.status === 'cashout' && b.cashout ? `<div class="note">💰 ${b.cashout.real ? 'Oferta real de la casa' : 'Monto estimado'}${b.cashout.nowOdds ? ` · momio en ese momento ${dec(b.cashout.nowOdds)}` : ''}${b.cashout.p != null ? ` · prob. del bot ${pct(b.cashout.p)}` : ''}</div>` : '';
   return `<div class="bet-card glass ${s.cls}">
     <div class="bet-top"><span class="bet-state">${s.icon} ${s.text}</span><span class="note">${esc(SOURCE_LABEL[b.source] || b.source)} · ${esc(lg?.short || '')} · ${new Date(b.placedAt).toLocaleDateString('es-MX', { day: 'numeric', month: 'short' })}</span></div>
     <div class="bet-title">${esc(b.label)} <span class="note">· ${esc(b.market)}</span></div>
     <div class="note">${esc(b.home)} vs ${esc(b.away)}${b.finalScore ? ` · final ${esc(b.finalScore)}` : ''}${live}</div>
     ${b.eventDate ? `<div class="bet-when">🗓️ ${esc(new Date(b.eventDate).toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' }))} · ⏰ ${esc(new Date(b.eventDate).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }))}</div>` : ''}
     <div class="bet-nums"><div><span>Monto</span><b>${money(b.stake)}</b></div><div><span>Momio</span><b>${dec(b.odds)}</b></div><div><span>${resultLabel}</span>${result}</div></div>
-    ${cashBlock}
+    ${cashBlock}${cashDone}
     ${b.status === 'pending' && !compact ? `<div class="bet-actions">${bk ? `<span class="tag" style="background:${bk.color};color:#fff">⭐ ${esc(bk.name)}</span>` : ''}${b.placedReal ? '<span class="tag value">Colocada</span>' : ''}<span class="spacer"></span>
-      ${c ? `<button class="btn small ${cashOutSuggested(c) ? 'gold' : ''}" data-cashout="${b.id}" data-amount="${(c.fair * 0.95).toFixed(2)}">Cobrar ${money(c.fair * 0.95)}</button>` : ''}
+      ${c ? `<button class="btn small ${cashOutSuggested(c) ? 'gold' : ''}" data-cashout="${b.id}" data-amount="${c.amount.toFixed(2)}">Cobrar ${money(c.amount)}</button>` : ''}
       <button class="btn small" data-mx="${b.id}">Momio real</button><button class="btn small danger" data-cancel="${b.id}">Anular</button></div>` : ''}
   </div>`;
 }
@@ -2580,7 +2590,28 @@ function cashOutInfo(b) {
   if (p == null) return null;
   const full = b.stake * b.odds;
   const fair = full * p;
-  return { a, p, fair, full, live: a.ev.state === 'in', profit: fair - b.stake };
+  const live = a.ev.state === 'in';
+  // Momio actual de la casa: el mercado (sin margen) + el margen de esa casa. Antes del partido se usa el real si hay.
+  const pMkt = sel.pMarket ?? p;
+  const ml = b.market === '1X2' || b.market === 'Ganador';
+  const est = b.book ? K.bookEstimates(B.getState(), { sport: b.sport, pick: b.pick, fairP: pMkt, refOdds: live ? null : sel.odds, real: !live && ml ? a.ev.bookOdds : null, market: b.market })[b.book] : null;
+  const nowOdds = est?.odds || (pMkt > 0 ? Math.max(1.01, 1 / pMkt / 1.07) : b.odds);
+  // Cobro = monto × momio apostado ÷ momio actual, menos el descuento extra de la casa (aprendido de tus ofertas).
+  const base = full / nowOdds;
+  const cf = cashFactor(b.book, live);
+  const offerEst = base * cf.f;
+  const offer = b.cashOffer && Date.now() - b.cashOffer.t < 15 * 60_000 ? b.cashOffer : null;
+  const amount = offer ? offer.amount : offerEst;
+  return {
+    a, p, fair, full, live, stake: b.stake, profit: fair - b.stake, nowOdds, nowLabel: live ? 'en vivo, estimado' : est?.src === 'real' ? 'real' : est?.src === 'aprendido' ? 'aprendido' : 'estimado',
+    base, offerEst, offer, amount, cfN: cf.n, impliedOdds: full / amount, good: amount >= fair * 0.95,
+  };
+}
+// Descuento extra que aplica cada casa al cobro anticipado: con tus ofertas capturadas se aprende; si no, 4%.
+function cashFactor(book, live) {
+  const qs = (B.getState().cashQuotes || []).filter((q) => q.book === book && !!q.live === !!live).slice(-30);
+  if (qs.length < 2) return { f: live ? 0.95 : 0.96, n: 0 };
+  return { f: Math.min(1.05, Math.max(0.6, qs.reduce((a, q) => a + q.ratio, 0) / qs.length)), n: qs.length };
 }
 
 function cashOutSection() {
@@ -3056,7 +3087,11 @@ document.addEventListener('click', async (e) => {
   }
   if (t.dataset.cashout) {
     const amt = Number(t.dataset.amount);
-    if (confirm(`¿Cobrar ahora esta apuesta por ${money(amt)}? (simulado, en tu banca ficticia)`)) { B.cashOut(t.dataset.cashout, amt); toast('💸 Cobro anticipado registrado'); render(); }
+    const b = B.pendingBets().find((x) => x.id === t.dataset.cashout), c = b && cashOutInfo(b);
+    if (confirm(`¿Cobrar ahora esta apuesta por ${money(amt)}?${c?.offer ? ' (oferta real de la casa)' : ' (monto estimado: si tu casa ofrece otro, escríbelo primero)'}`)) {
+      B.cashOut(t.dataset.cashout, amt, c ? { real: !!c.offer, nowOdds: Math.round(c.nowOdds * 100) / 100, p: c.p, estimate: Math.round(c.offerEst * 100) / 100 } : null);
+      toast('💸 Cobro anticipado registrado'); render();
+    }
     return;
   }
   if (t.dataset.airetry !== undefined) { S.aiPause = null; toast('Reintentando la IA…'); refreshAll(); return; }
@@ -3134,6 +3169,15 @@ document.addEventListener('change', (e) => {
   if (t.dataset.bookon) { B.updateBook(t.dataset.bookon, { enabled: t.checked }); render(); }
   if (t.dataset.bookbal) { B.updateBook(t.dataset.bookbal, { balance: t.value === '' ? null : Number(t.value) }); toast('Saldo guardado'); render(); }
   if (t.dataset.setting) { const v = Number(t.value); if (Number.isFinite(v)) { B.updateSettings({ [t.dataset.setting]: v }); toast('Ajuste guardado'); if (t.dataset.setting === 'scanMinutes') schedule(); } }
+  if (t.dataset.cashoffer) {
+    const id = t.dataset.cashoffer, v = Number(String(t.value).replace(/[$,\s]/g, ''));
+    if (t.value.trim() && !(v > 0)) { toast('Monto no válido: escribe lo que te ofrece la casa, p. ej. 145.50'); return; }
+    const b = B.pendingBets().find((x) => x.id === id), c = b && cashOutInfo(b);
+    B.setCashOffer(id, v > 0 ? v : null, c?.base || null);
+    if (v > 0) toast('✓ Oferta guardada: el bot aprende cuánto descuenta tu casa al cobrar antes');
+    render();
+    return;
+  }
   if (t.dataset.slipquote) {
     const [id, book] = t.dataset.slipquote.split('|');
     const item = B.getState().slip.find((x) => x.id === id);
@@ -3173,10 +3217,17 @@ function schedule() {
 // Tiempo real: cada 5 s se actualizan solo las ligas con partidos en vivo (o por empezar en 10 min):
 // marcadores, probabilidades en vivo, precios de Polymarket/Kalshi y liquidación de apuestas.
 let liveBusy = false;
+S.pendTick = new Map();
 async function liveTick() {
   if (S.scanning || liveBusy || document.hidden) return;
   const soon = (e) => e.state === 'in' || (e.state === 'pre' && new Date(e.date) - Date.now() < 10 * 60_000 && new Date(e.date) - Date.now() > -4 * 3600_000);
-  const leagues = D.LEAGUES.filter((lg) => (S.events.get(lg.id) || []).some(soon));
+  // Apuestas abiertas cuyo partido ya empezó o acaba de terminar: su liga se revisa al menos cada 30 s hasta
+  // que se liquiden, aunque ya no haya otro partido en vivo (así la ganada/perdida aparece al instante).
+  const now = Date.now();
+  const open = new Set([...B.pendingBets(), ...B.pendingShadows()].filter((b) => { const t = new Date(b.eventDate).getTime(); return t < now + 60_000 && now - t < 8 * 3600_000; }).map((b) => b.leagueId));
+  const due = (lg) => open.has(lg.id) && now - (S.pendTick.get(lg.id) || 0) > 30_000;
+  const leagues = D.LEAGUES.filter((lg) => (S.events.get(lg.id) || []).some(soon) || due(lg));
+  leagues.forEach((lg) => S.pendTick.set(lg.id, now));
   if (!leagues.length) return;
   liveBusy = true;
   try {
@@ -3244,7 +3295,22 @@ async function liveTick() {
   schedule();
   setInterval(liveTick, 5_000);
   // Sincroniza con otros dispositivos (PC ↔ celular).
-  setInterval(async () => { if (await B.pullState()) render(); }, 30_000);
+  let lastPull = 0;
+  setInterval(async () => {
+    // Con apuestas en juego se revisa cada 5 s; si no, cada 30 s.
+    const busy = B.pendingBets().some((b) => new Date(b.eventDate) < new Date());
+    if (Date.now() - lastPull < (busy ? 5_000 : 30_000) - 500) return;
+    lastPull = Date.now();
+    const before = new Map(B.pendingBets().map((b) => [b.id, b]));
+    if (!(await B.pullState())) return;
+    for (const b of B.getState().bets) {
+      if (!before.has(b.id) || b.status === 'pending') continue;
+      if (b.status === 'won') toast(`✅ Ganaste: ${b.label} · +${money(b.payout - b.stake)}`, 6000);
+      else if (b.status === 'lost') toast(`❌ Perdiste: ${b.label} · −${money(b.stake)}`, 6000);
+    }
+    render();
+  }, 5_000);
+  setInterval(() => { if (!S.scanning && !document.hidden && B.pendingBets().length) settleOld().then(() => render()).catch(() => {}); }, 120_000);
   document.addEventListener('visibilitychange', async () => { if (!document.hidden && await B.pullState()) render(); });
   window.addEventListener('resize', () => { if (S.tab === 'home' || S.tab === 'bank') drawEquity(); });
 })();

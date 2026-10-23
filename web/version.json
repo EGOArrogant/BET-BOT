@@ -1,8 +1,11 @@
 {
-  "version": "2.10.0",
+  "version": "2.11.0",
   "date": "2026-10-23",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Apuestas abiertas en tiempo real: en cuanto termina el partido se marcan ganadas o perdidas (revisión cada 30 s de las ligas con apuestas en juego y cada 2 min de partidos que ya no salen en la lista), y el celular se entera en segundos con aviso",
+    "Cobro anticipado con datos reales: momio actual en tu casa, cobro estimado (monto × momio apostado ÷ momio actual, menos el descuento de la casa) y casilla para escribir la oferta real de tu casa",
+    "Con cada oferta que capturas el bot aprende cuánto descuenta cada casa al cobrar antes, y te dice si la oferta es justa",
     "Cada apuesta muestra el día y la hora del partido",
     "Ya no existe el modo \"Priorizar acierto\": el bot aprende solo si las apuestas de baja probabilidad le salen mal y deja de tomarlas o les baja la probabilidad",
     "Momio más cercano al real en cada casa mexicana: real (The Odds API) → aprendido con tus capturas → estimado con el margen típico de la casa",

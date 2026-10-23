@@ -99,7 +99,12 @@ export async function loadState() {
 export async function pullState() {
   if (saveTimer) return false; // hay cambios locales por guardar
   try {
-    const res = await fetch('/api/state');
+    // Primero solo la revisión (barato); el estado completo se baja únicamente si otro dispositivo lo cambió.
+    try {
+      const q = await fetch('/api/state/rev', { cache: 'no-store' });
+      if (q.ok && Number((await q.json()).rev) === rev) return false;
+    } catch {}
+    const res = await fetch('/api/state', { cache: 'no-store' });
     const r = Number(res.headers.get('X-Rev') || 0);
     if (r === rev) return false;
     const remote = await res.json();
@@ -232,8 +237,23 @@ export function cancelBet(id) {
   log(`Apuesta anulada: ${b.label} (${b.eventName})`);
 }
 
+// Oferta de cobro anticipado que muestra la casa (la capturas tú). Con ella el bot aprende cuánto descuenta
+// cada casa al cobrar antes: base = cobro calculado con el momio actual de la casa, sin descuento extra.
+export function setCashOffer(id, amount, base = null) {
+  const b = state.bets.find((x) => x.id === id);
+  if (!b || b.status !== 'pending') return;
+  if (!(amount > 0)) { delete b.cashOffer; save(); return; }
+  b.cashOffer = { amount: round2(amount), t: Date.now() };
+  const r = base > 0 ? amount / base : null;
+  if (b.book && r > 0.4 && r < 1.2) {
+    state.cashQuotes = [...(state.cashQuotes || []), { book: b.book, sport: b.sport, live: b.eventDate && new Date(b.eventDate) < new Date(), ratio: r, t: Date.now() }].slice(-500);
+  }
+  save();
+}
+
 // Cobro anticipado (cash out) simulado: cierra la apuesta antes de tiempo por el monto indicado.
-export function cashOut(id, amount) {
+// info: { real: si el monto es la oferta real de la casa, nowOdds: momio de la casa en ese momento, p: prob. del bot }
+export function cashOut(id, amount, info = null) {
   const b = state.bets.find((x) => x.id === id);
   if (!b || b.status !== 'pending') return false;
   amount = round2(Number(amount));
@@ -241,10 +261,12 @@ export function cashOut(id, amount) {
   b.status = 'cashout';
   b.payout = amount;
   b.settledAt = Date.now();
+  if (info) b.cashout = info;
+  delete b.cashOffer;
   state.bankroll = round2(state.bankroll + amount);
   const bk = b.book && state.books[b.book];
   if (bk && bk.balance != null && bk.balance !== '') bk.balance = round2(Number(bk.balance) + amount - b.stake);
-  log(`💸 Cobro anticipado: ${b.label} (${b.eventName}) por $${amount} (apostaste $${b.stake})`, amount >= b.stake ? 'won' : 'lost');
+  log(`💸 Cobro anticipado: ${b.label} (${b.eventName}) por $${amount} (apostaste $${b.stake})${info?.real ? ' · oferta real de la casa' : info ? ' · monto estimado' : ''}`, amount >= b.stake ? 'won' : 'lost');
   state.history.push({ t: Date.now(), bankroll: equityNow() });
   save();
   return true;
