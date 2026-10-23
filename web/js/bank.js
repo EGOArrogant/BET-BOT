@@ -371,7 +371,8 @@ export const segKey = (sport, market, odds) => `${sport}|${market}|${oddsBucket(
 const SEG_MIN = 30; // resultados mínimos antes de juzgar un segmento
 
 export function recordShadow(ev, sel, adj = 0) {
-  if (ev.state !== 'pre' || !sel.odds || !sel.value) return false;
+  // También las bloqueadas por un error aprendido: así se sabe si el patrón mejora y se puede desbloquear.
+  if (ev.state !== 'pre' || !sel.odds || !(sel.value || sel.wouldValue)) return false;
   if (state.shadow.some((s) => s.eventId === ev.id && s.market === sel.market && s.pick === sel.pick)) return false;
   state.shadow.push({
     eventId: ev.id, leagueId: ev.leagueId, sport: ev.sport, eventDate: ev.date, name: ev.name,

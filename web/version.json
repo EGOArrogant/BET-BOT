@@ -1,8 +1,13 @@
 {
-  "version": "2.8.0",
+  "version": "2.9.0",
   "date": "2026-10-23",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "El bot aprende de sus errores: encuentra patrones donde gana menos de lo esperado (con evidencia estadística) y los bloquea o baja su probabilidad",
+    "Banca → \"Errores que el bot ya no repite\" y \"Lo que sí le funciona\"; los patrones bloqueados se siguen anotando en sombra para desbloquearse si mejoran",
+    "Nuevo interruptor \"Priorizar acierto\": solo apuestas con probabilidad de 60% o más",
+    "Clima a la hora del partido (Open-Meteo, gratis): lluvia, viento y temperatura en fútbol, NFL, MLB y LMB al aire libre; etiqueta en el partido y dato para la IA",
+    "NBA con temporadas pasadas mediante balldontlie (clave gratuita en Ajustes)",
     "NFL, MLB y LMB con modelo Elo entrenado en temporadas pasadas (nflverse y la API oficial de MLB), con backtesting sin trampa",
     "NFL medida contra el momio de cierre: el mercado es más preciso, así que el bot le da 0% de peso al modelo ahí",
     "NBA y tenis aprenden con los partidos que ve el bot y se activan solos al juntar suficientes",

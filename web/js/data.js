@@ -164,6 +164,9 @@ function normalizeTeamEvent(ev, league) {
     home: h, away: a,
     odds: parseEspnOdds(comp), venue: comp.venue?.fullName || '',
     neutral: !!comp.neutralSite,
+    // Para el clima: ciudad del estadio y si es techado (ahí no importa).
+    city: [comp.venue?.address?.city, comp.venue?.address?.state || comp.venue?.address?.country].filter(Boolean).join(', '),
+    indoor: !!comp.venue?.indoor,
   };
 }
 
@@ -279,7 +282,7 @@ async function espnScoreboard(league, dateStr) {
 
 // ---------- MLB Stats API: LMB ----------
 async function lmbSchedule(league, from, to) {
-  const url = `${MLB}/schedule?sportId=${league.sportId}&leagueId=${league.leagueId}&startDate=${from}&endDate=${to}&hydrate=linescore,probablePitcher`;
+  const url = `${MLB}/schedule?sportId=${league.sportId}&leagueId=${league.leagueId}&startDate=${from}&endDate=${to}&hydrate=linescore,probablePitcher,venue(location)`;
   const data = await getJSON(url, 4_000); // LMB en tiempo real
   const out = [];
   for (const d of data.dates || []) {
@@ -296,6 +299,8 @@ async function lmbSchedule(league, from, to) {
         date: g.gameDate, state: st === 'Final' ? 'post' : st === 'Live' ? 'in' : 'pre', completed: st === 'Final',
         detail: st === 'Live' ? `${{ Top: 'Alta', Bottom: 'Baja', Middle: 'Mitad', End: 'Fin' }[ls.inningState] || ''} ${ls.currentInning || ''}`.trim() : stateEs(g.status?.detailedState),
         clock: '', period: ls.currentInning || 0, home: side('home'), away: side('away'), odds: null, venue: g.venue?.name || '',
+        geo: g.venue?.location?.defaultCoordinates ? { lat: g.venue.location.defaultCoordinates.latitude, lon: g.venue.location.defaultCoordinates.longitude } : null,
+        city: g.venue?.location?.city || '',
       });
     }
   }

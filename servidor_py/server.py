@@ -40,9 +40,11 @@ import bot as botmod  # noqa: E402
 from historico import FD_LINKS, Historico  # noqa: E402
 from modelos import Modelos  # noqa: E402
 from ratings import Ratings  # noqa: E402
+from aprendizaje import Aprendizaje  # noqa: E402
+import clima as climamod  # noqa: E402
 from precios import Precios  # noqa: E402
 
-SERVER_VERSION = "3.4.0"
+SERVER_VERSION = "3.5.0"
 ENGINE = "python"
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -93,6 +95,7 @@ runner: botmod.BotRunner | None = None
 hist: Historico
 modelos: Modelos
 ratings: Ratings
+aprende: Aprendizaje
 precios: Precios
 
 
@@ -359,7 +362,7 @@ async def on_error(req: Request, exc: Exception):
 async def config(req: Request):
     cfg = read_env()
     return j({
-        "hasAnthropic": bool(cfg.get("ANTHROPIC_API_KEY")), "hasOdds": bool(cfg.get("ODDS_API_KEY")),
+        "hasAnthropic": bool(cfg.get("ANTHROPIC_API_KEY")), "hasOdds": bool(cfg.get("ODDS_API_KEY")), "hasNba": bool(cfg.get("BALLDONTLIE_API_KEY")),
         "aiModel": cfg.get("AI_MODEL") or "claude-opus-5-5", "hasUpdates": bool(cfg.get("UPDATE_MANIFEST_URL")),
         "local": is_local(req), "lan": app.state.lan, "serverVersion": SERVER_VERSION, "engine": ENGINE,
     })
@@ -651,6 +654,14 @@ async def keys(req: Request):
         if k and not re.match(r"^[A-Za-z0-9]{16,64}$", k):
             return j({"error": "Clave de The Odds API no valida"}, 400)
         vals["ODDS_API_KEY"] = k
+    if b.get("nbaKey") is not None:
+        k = str(b["nbaKey"]).strip()
+        if k and not re.match(r"^[A-Za-z0-9\-]{16,80}$", k):
+            return j({"error": "Clave de balldontlie no valida"}, 400)
+        vals["BALLDONTLIE_API_KEY"] = k
+        # Con la clave nueva se bajan las temporadas de la NBA y se re-entrena (en segundo plano).
+        if k and not ratings.busy:
+            asyncio.create_task(asyncio.to_thread(ratings.train))
     if b.get("updateUrl") is not None:
         u = str(b["updateUrl"]).strip()
         if u and not re.match(r"^https://\S+$", u):
@@ -849,6 +860,20 @@ async def modelos_entrenar(req: Request):
     return j({"started": True})
 
 
+@app.get("/api/aprendizaje/patrones")
+async def aprendizaje_patrones():
+    # Patrones de error aprendidos de las apuestas resueltas (se recalculan cada 30 min).
+    return j(await asyncio.to_thread(aprende.get))
+
+
+@app.post("/api/clima")
+async def clima(req: Request):
+    # Clima a la hora del partido (Open-Meteo, gratis y sin clave). Datos: "Weather data by Open-Meteo.com".
+    b = await body_json(req)
+    items = (b.get("items") or [])[:60]
+    return j({"items": [await asyncio.to_thread(climamod.at, it) for it in items]})
+
+
 @app.post("/api/modelos/rating")
 async def modelos_rating(req: Request):
     b = await body_json(req)
@@ -948,8 +973,9 @@ def init() -> None:
     global hist, modelos
     hist = Historico(DATA)
     modelos = Modelos(DATA, hist)
-    global ratings
+    global ratings, aprende
     ratings = Ratings(DATA, hist)
+    aprende = Aprendizaje(store)
     global precios
     precios = Precios(DATA, read_env, os.environ.get("BETBOT_ODDS_BASE") or "https://api.the-odds-api.com/v4")
     rep = store.sync_from_files()

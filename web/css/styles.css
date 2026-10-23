@@ -716,3 +716,4 @@ html.is-offline #view { filter: grayscale(.6); opacity: .7; transition: filter .
 .src-dl { display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 12px; margin: 8px 0; }
 
 .tag.lv-tag { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); font-weight: 600; }
+.tag.wx-tag { background: color-mix(in srgb, var(--acc-news, var(--text-3)) 18%, transparent); color: var(--text); }

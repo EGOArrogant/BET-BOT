@@ -365,15 +365,54 @@ export function selections(ev, model, settings, weights) {
   return out;
 }
 
+// ---------- Aprendizaje de errores ----------
+// El servidor revisa las apuestas resueltas y encuentra patrones donde el bot gana claramente menos de lo que
+// esperaba. Aquí se aplican: "bloqueado" = no se apuesta; "corregido" = se baja la probabilidad (85–100%).
+let PATTERNS = [];
+export function setPatterns(list) { PATTERNS = Array.isArray(list) ? list : []; }
+export const getPatterns = () => PATTERNS;
+const oddsBucketOf = (o) => (o < 2 ? 'menos de 2.00' : o < 3 ? '2.00 a 2.99' : o < 5 ? '3.00 a 4.99' : '5.00 o más');
+function gapBucket(pm, pk) {
+  if (pm == null || pk == null) return null;
+  const g = pm - pk;
+  return g < -0.05 ? 'modelo abajo del mercado' : g < 0.05 ? 'casi igual (±5 pts)' : g < 0.10 ? 'modelo 5 a 10 pts arriba' : g < 0.20 ? 'modelo 10 a 20 pts arriba' : 'modelo 20+ pts arriba';
+}
+// Mismas características que usa el servidor (aprendizaje.py → features).
+export function featuresOf(x) {
+  const f = { deporte: x.sport, liga: x.leagueId, mercado: x.market };
+  if (x.odds) { f.lado = x.odds < 2 ? 'favorito' : 'underdog'; f.momio = oddsBucketOf(x.odds); }
+  const g = gapBucket(x.pModel, x.pMarket);
+  if (g) f.desacuerdo = g;
+  if (x.src) f.fuente = String(x.src);
+  f.momento = x.live ? 'en vivo' : 'previo';
+  if (x.sharp) f.sharps = x.sharp;
+  return f;
+}
+function learned(ev, s) {
+  if (!PATTERNS.length) return null;
+  const f = featuresOf({ sport: ev.sport, leagueId: ev.leagueId, market: s.market, odds: s.odds, pModel: s.pModel, pMarket: s.pMarket, src: s.oddsSource, live: ev.state === 'in' });
+  const hit = PATTERNS.filter((p) => p.conds.every(([k, v]) => f[k] === v));
+  if (!hit.length) return null;
+  const block = hit.find((p) => p.action === 'bloqueado');
+  const factor = Math.min(...hit.map((p) => (p.action === 'corregido' ? p.factor : 1)));
+  return { block, factor, hit };
+}
+
 function pack(ev, settings, s) {
   const minEV = settings.minEV ?? 0.03;
+  // Lo aprendido de errores pasados: baja la probabilidad en patrones que han ganado menos de lo esperado.
+  const lr = s.p != null ? learned(ev, s) : null;
+  if (lr && lr.factor < 1) s = { ...s, pRaw: s.p, p: s.p * lr.factor };
   const ev_ = s.odds ? s.p * s.odds - 1 : null;
   const b = s.odds ? s.odds - 1 : null;
   const kellyFull = s.odds ? (s.p * s.odds - 1) / b : null;
   return {
     ...s, eventId: ev.id, leagueId: ev.leagueId, sport: ev.sport,
     ev: ev_, kellyFull, minOdds: minOddsFor(s.p, minEV), reqEV: s.odds ? requiredEV(minEV, s.odds) : minEV,
-    value: ev_ != null && ev_ >= requiredEV(minEV, s.odds) && s.odds >= (settings.minOdds ?? 1.4) && s.odds <= (settings.maxOdds ?? 10),
+    value: !lr?.block && ev_ != null && ev_ >= requiredEV(minEV, s.odds) && s.odds >= (settings.minOdds ?? 1.4) && s.odds <= (settings.maxOdds ?? 10),
+    // Bloqueada por un error aprendido: no se apuesta, pero se sigue anotando en sombra para ver si mejora.
+    wouldValue: !!lr?.block && ev_ != null && ev_ >= requiredEV(minEV, s.odds),
+    blocked: lr?.block ? lr.block : null, learned: lr ? { factor: lr.factor, patterns: lr.hit.length } : null,
   };
 }
 

@@ -198,8 +198,41 @@ function postFinishedSoccer() {
     .then((r) => { if (r.ok) items.forEach((x) => S.pySent.add(x.id)); }).catch(() => {});
 }
 
+// Patrones de error aprendidos por el servidor (se aplican en models.js al calcular cada selección).
+S.patternsT = 0;
+async function refreshPatterns(force = false) {
+  if (S.cfg?.engine !== 'python' || (!force && Date.now() - S.patternsT < 30 * 60_000)) return;
+  try { S.learn = await (await fetch('/api/aprendizaje/patrones', { cache: 'no-store' })).json(); M.setPatterns(S.learn.patterns); S.patternsT = Date.now(); } catch {}
+}
+
+// ---------- Clima (Open-Meteo, gratis): lluvia, viento y temperatura a la hora del partido ----------
+// Solo deportes al aire libre (fútbol, NFL, béisbol) en los próximos 3 días; no aplica en estadios techados.
+S.wx = new Map();
+const WX_SPORTS = new Set(['soccer', 'football', 'baseball']);
+async function refreshWeather() {
+  if (S.cfg?.engine !== 'python') return;
+  const soon = Date.now() + 3 * 86400000;
+  const need = allEvents().filter((e) => WX_SPORTS.has(e.sport) && e.state === 'pre' && !e.indoor && (e.city || e.geo) && new Date(e.date) < soon
+    && !(S.wx.get(e.id) && Date.now() - S.wx.get(e.id).t < 3600_000)).slice(0, 60);
+  if (need.length) {
+    try {
+      const r = await fetch('/api/clima', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: need.map((e) => ({ date: e.date, city: e.city || null, lat: e.geo?.lat, lon: e.geo?.lon })) }) });
+      const { items } = await r.json();
+      need.forEach((e, i) => S.wx.set(e.id, { t: Date.now(), w: items?.[i] || null }));
+    } catch {}
+  }
+  for (const e of allEvents()) e.weather = S.wx.get(e.id)?.w || null;
+}
+const wxBad = (w) => w && ((w.rainProb ?? 0) >= 50 || (w.wind ?? 0) >= 25 || (w.temp != null && (w.temp <= 0 || w.temp >= 33)));
+function wxText(w) {
+  if (!w) return '';
+  return [w.temp != null ? `${Math.round(w.temp)}°C` : '', w.rainProb != null ? `lluvia ${w.rainProb}%` : '', w.wind != null ? `viento ${Math.round(w.wind)} km/h` : ''].filter(Boolean).join(' · ');
+}
+
 async function refreshAll() {
   if (S.scanning) return;
+  await refreshPatterns();
   S.scanning = true;
   $('#last-update').textContent = 'Actualizando…';
   await B.pullState(); // cambios hechos desde otro dispositivo
@@ -213,6 +246,7 @@ async function refreshAll() {
   B.settleShadow(events);
   B.learnFromEvents(events);
   postFinishedSoccer();
+  refreshWeather().catch(() => {});
   await settleOld();
   B.cleanSlip(events);
   backfillLedger().catch(() => {});
@@ -324,6 +358,8 @@ function practiceBets() {
     if (!a.model.tradable) continue;
     for (const x of a.sels) {
       if (!x.odds || x.odds < 1.4 || x.odds > 3.6 || x.ev == null) continue; // momios moderados: aprendizaje más estable
+      if (x.blocked) continue; // patrón que el bot aprendió que pierde
+      if (st.settings.highHit && x.p < 0.6) continue; // "priorizar acierto": solo probabilidad ≥ 60%
       if (segs[B.segKey(a.ev.sport, x.market, x.odds)]?.status === 'bloqueado') continue;
       cands.push({ a, sel: x });
     }
@@ -361,7 +397,7 @@ async function valueBets() {
     const hrs = (new Date(a.ev.date) - Date.now()) / 3600000;
     if (hrs > 36 || hrs < 0.05) continue;
     // Lo aprendido con las apuestas sombra: no apuesta en segmentos que han dado pérdidas.
-    const best = a.sels.filter((x) => x.value && segs[B.segKey(a.ev.sport, x.market, x.odds)]?.status !== 'bloqueado').sort((x, y) => y.ev - x.ev)[0];
+    const best = a.sels.filter((x) => x.value && !(s.highHit && x.p < 0.6) && segs[B.segKey(a.ev.sport, x.market, x.odds)]?.status !== 'bloqueado').sort((x, y) => y.ev - x.ev)[0];
     if (best) cands.push({ a, sel: best });
   }
   cands.sort((x, y) => y.sel.ev - x.sel.ev);
@@ -416,6 +452,7 @@ async function buildContext(a) {
     local: { nombre: a.ev.home.name, tabla: table.get(String(a.ev.home.id)) || null, forma: a.ev.home.form, record: a.ev.home.record, sets: a.ev.home.linescores },
     visitante: { nombre: a.ev.away.name, tabla: table.get(String(a.ev.away.id)) || null, forma: a.ev.away.form, record: a.ev.away.record, sets: a.ev.away.linescores },
     momios_referencia: a.ev.odds,
+    clima_a_la_hora_del_partido: a.ev.weather ? { temperatura_c: a.ev.weather.temp, prob_lluvia: a.ev.weather.rainProb, lluvia_mm: a.ev.weather.rain, viento_kmh: a.ev.weather.wind, rachas_kmh: a.ev.weather.gust, fuente: 'Open-Meteo.com' } : (a.ev.indoor ? 'estadio techado' : null),
     pelea: a.ev.sport === 'mma' || a.ev.sport === 'boxing' ? {
       evento: a.ev.tournament, division: a.ev.round, rounds: a.ev.rounds, lugar_en_cartelera: a.ev.segment, campeonato: a.ev.titleFight ? a.ev.belt : 'no',
       peleador_1: { nombre: a.ev.home.name, record: a.ev.home.record, pais: a.ev.home.flag, cinturones: a.ev.home.belts, estadisticas: a.ev.home.athleteId ? await fighterData(a.ev.home) : null },
@@ -631,6 +668,7 @@ function botWidget() {
       <div class="row"><div class="icon-sq" style="background:var(--green-fill)">🤖</div><div class="grow"><b>Apostar automáticamente</b><div class="meta">Solo apuestas con EV ≥ ${pct(s.minEV)} · máx. ${s.maxBetsPerDay} al día${s.autopilot ? (s.autopilotDevice === B.SERVER_DEVICE ? ' · corre en el bot 24/7 de tu PC (no necesitas la app abierta)' : B.isAutopilotHere() ? ' · corre en este dispositivo (mantén esta pestaña abierta)' : ' · corre en otro dispositivo') : ''}</div></div>${s.autopilot && !B.isAutopilotHere() && !(s.autopilotDevice === B.SERVER_DEVICE && S.botStatus?.healthy) ? '<button class="btn small" data-takeover>Correr aquí</button>' : ''}${sw('sw-auto', s.autopilot)}</div>
       ${bot247Row()}
       <div class="row"><div class="icon-sq" style="background:var(--purple)">✦</div><div class="grow"><b>Confirmar con IA</b><div class="meta">${aiReady() ? 'Claude revisa cada apuesta y busca noticias' : 'Agrega tu clave de Anthropic en Más → Ajustes'}</div></div>${sw('sw-ai', s.aiConfirm, !aiReady())}</div>
+      <div class="row"><div class="icon-sq" style="background:var(--green-fill)">🎯</div><div class="grow"><b>Priorizar acierto</b><div class="meta">Solo apuestas con probabilidad de 60% o más: ganas más seguido, pero cobras menos por apuesta y hay menos oportunidades</div></div>${sw('sw-highhit', !!s.highHit)}</div>
       <div class="row"><div class="icon-sq" style="background:var(--orange-fill)">🎓</div><div class="grow"><b>Modo práctica diaria</b><div class="meta">Al menos ${s.practicePerDay} apuestas ficticias al día de $${s.practiceStake ?? 10} con las mejores opciones disponibles, para aprender desde hoy · hoy: ${st.bets.filter((b) => b.source === 'práctica' && new Date(b.placedAt).toDateString() === new Date().toDateString()).length}/${s.practicePerDay}</div></div>${sw('sw-practice', s.practiceMode)}</div>
       <div class="row"><div class="icon-sq" style="background:var(--blue)">⏱</div><div class="grow"><b>Escaneo</b><div class="meta">Cada ${s.scanMinutes} min · última ${S.lastUpdate ? new Date(S.lastUpdate).toLocaleTimeString('es-MX') : '—'}</div></div><button class="btn small" id="scan-now">Escanear</button></div>
     </div>
@@ -806,6 +844,7 @@ function tagsFor(a) {
   }
   t.push(marketTag(a), smartTag(a), sharpTag(a));
   t.push(lvTag(a));
+  if (wxBad(a.ev.weather)) t.push(`<span class="tag wx-tag" title="Clima a la hora del partido (Open-Meteo.com)">${(a.ev.weather.rainProb ?? 0) >= 50 ? '🌧️' : (a.ev.weather.wind ?? 0) >= 25 ? '💨' : '🌡️'} ${esc(wxText(a.ev.weather))}</span>`);
   if (a.golden.length) t.push('<span class="tag gold">★ Oro</span>');
   const v = a.sels.filter((s) => s.value);
   if (v.length && a.ev.state === 'pre') t.push(`<span class="tag value">Valor ${pct(Math.max(...v.map((s) => s.ev)), 1)}</span>`);
@@ -1315,6 +1354,7 @@ function viewBank() {
   </div>
   ${shadowSection()}
   ${learningReport()}
+  ${errorsLearned()}
   <div class="section-title">Precisión del modelo <small>Frente al mercado (Brier: menor es mejor)</small></div>
   <div class="widget glass"><table class="t"><thead><tr><th>Deporte</th><th class="num">Partidos evaluados</th><th class="num">Acierto del favorito</th><th class="num">Brier modelo</th><th class="num">Brier mercado</th><th class="num">Peso del modelo</th></tr></thead><tbody>
     ${Object.keys(st.weights).map((s) => { const x = L[s]; return `<tr><td>${D.SPORT_ICON[s]} ${D.SPORT_NAME[s]}</td><td class="num">${x?.n || 0}</td><td class="num">${pct(x?.hitRate)}</td><td class="num">${x ? x.bm.toFixed(3) : '—'}</td><td class="num">${x?.bk != null ? x.bk.toFixed(3) : '—'}</td><td class="num"><b>${pct(st.weights[s])}</b></td></tr>`; }).join('')}
@@ -1446,6 +1486,37 @@ function knowledgeSection() {
         <div class="kv mt"><span>Resultado total registrado</span><b class="${prof >= 0 ? 'up' : 'down'}">${signed(prof)}</b></div>` : '<div class="empty">Aún no hay apuestas liquidadas en la base de datos.</div>'}
       <div class="note mt">Cada apuesta liquidada se guarda para siempre en <span class="kbd">data/apuestas.jsonl</span> de tu PC (momio, probabilidades, mercado, sharps y resultado). La IA y el bot la usan para aprender.</div></div>
   </div>`;
+}
+
+// ---------- Errores que el bot ya no repite ----------
+const FEAT_LABEL = { deporte: 'Deporte', liga: 'Liga', mercado: 'Mercado', lado: '', momio: 'Momio', desacuerdo: '', fuente: 'Precio de', momento: '', sharps: '' };
+const SPORT_ES = { soccer: 'fútbol', football: 'NFL', basketball: 'NBA', baseball: 'béisbol', tennis: 'tenis', esports: 'eSports', mma: 'MMA', boxing: 'boxeo' };
+function patternText(conds) {
+  return conds.map(([k, v]) => {
+    if (k === 'deporte') return SPORT_ES[v] || v;
+    if (k === 'liga') return D.leagueById(v)?.name || v;
+    if (k === 'lado') return v === 'favorito' ? 'apostando al favorito' : 'apostando al underdog';
+    if (k === 'momio') return `momio ${v}`;
+    if (k === 'desacuerdo') return `con el ${v}`;
+    if (k === 'fuente') return `precio de ${v}`;
+    if (k === 'momento') return v === 'en vivo' ? 'en vivo' : 'antes del partido';
+    if (k === 'sharps') return `con los ${v}`;
+    return `${FEAT_LABEL[k] || k} ${v}`;
+  }).join(' · ');
+}
+function errorsLearned() {
+  const L = S.learn;
+  const head = '<div class="section-title">Errores que el bot ya no repite <small>Patrones donde ganó menos de lo que esperaba</small></div>';
+  if (S.cfg?.engine !== 'python') return '';
+  if (!L) { refreshPatterns(true).then(() => { if (S.tab === 'bank') render(); }); return head + '<div class="widget glass"><div class="shimmer"></div></div>'; }
+  const row = (p) => `<div class="row"><div class="grow"><b>${esc(patternText(p.conds))}</b>
+      <div class="meta">ganó ${p.wins} de ${p.n} cuando esperaba ${p.expected} · ROI ${pct(p.roi)} · ${p.kinds.apuesta} apuestas y ${p.kinds.sombra} sombra</div></div>
+      ${p.action === 'bloqueado' ? '<span class="tag live">⛔ Ya no apuesta aquí</span>' : p.action === 'corregido' ? `<span class="tag bet">↘ Le resta ${pct(1 - p.factor)} a su probabilidad</span>` : '<span class="tag value">✓ Le funciona</span>'}</div>`;
+  return `${head}<div class="widget glass">
+    <p class="note">Revisó <b>${L.analyzed}</b> apuestas resueltas (${L.byKind?.apuesta || 0} reales y ${L.byKind?.sombra || 0} sombra). Un patrón solo cuenta con ${L.rules?.minN || 20}+ casos y una diferencia clara entre lo que ganó y lo que esperaba: un par de derrotas no bloquean nada. Si un patrón bloqueado mejora, se desbloquea solo (se sigue anotando en sombra).</p>
+    ${L.patterns?.length ? `<div class="list">${L.patterns.map(row).join('')}</div>` : '<div class="empty">Todavía no hay patrones con evidencia suficiente de error.</div>'}
+    ${L.good?.length ? `<h3 class="mt">Lo que sí le funciona</h3><div class="list">${L.good.map(row).join('')}</div>` : ''}
+    <div class="note mt">Ojo: ningún modelo asegura la mayoría de apuestas ganadas. Para ganar más seguido existe "Priorizar acierto" (Inicio → Piloto), pero lo que deja dinero a la larga es apostar cuando el momio paga más que la probabilidad real (CLV positivo).</div></div>`;
 }
 
 // ---------- Reporte de aprendizaje (apuestas sombra) ----------
@@ -2810,7 +2881,10 @@ function keysSection() {
       <input class="input" id="key-anthropic" type="password" autocomplete="off" placeholder="${S.cfg.hasAnthropic ? '•••••••• (pega una nueva para cambiarla)' : 'sk-ant-...'}" style="flex:1;min-width:220px"><button class="btn primary" data-savekey="anthropic">Guardar</button></div>
     <div class="row" style="flex-wrap:wrap"><div class="icon-sq" style="background:var(--orange-fill)">⇄</div><div class="grow" style="min-width:200px"><b>Clave de The Odds API</b><div class="meta">${S.cfg.hasOdds ? '<span class="up">✓ Configurada</span>' : 'Opcional · Pinnacle y 40+ casas'}</div></div>
       <input class="input" id="key-odds" type="password" autocomplete="off" placeholder="${S.cfg.hasOdds ? '••••••••' : 'tu clave'}" style="flex:1;min-width:220px"><button class="btn primary" data-savekey="odds">Guardar</button></div>
+    <div class="row" style="flex-wrap:wrap"><div class="icon-sq" style="background:var(--acc-sports, var(--orange-fill))">🏀</div><div class="grow" style="min-width:200px"><b>Clave de balldontlie (NBA)</b><div class="meta">${S.cfg.hasNba ? '<span class="up">✓ Configurada</span> · el modelo de la NBA aprende con temporadas pasadas' : 'Opcional y gratis · da al bot 3 temporadas de la NBA para entrenar su modelo'}</div></div>
+      <input class="input" id="key-nba" type="password" autocomplete="off" placeholder="${S.cfg.hasNba ? '••••••••' : 'tu clave'}" style="flex:1;min-width:220px"><button class="btn primary" data-savekey="nba">Guardar</button></div>
   </div>
+  <div class="note mt">Clave de balldontlie (gratis): entra a <a href="https://app.balldontlie.io" target="_blank" rel="noopener">app.balldontlie.io</a>, crea tu cuenta con el plan Free, copia tu API key y pégala aquí. El bot la usa con calma (5 consultas por minuto) para bajar los resultados de la NBA.</div>
   <div class="note mt">Cómo obtener la clave de Anthropic: entra a <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a> → crea tu cuenta → <b>Billing</b> (agrega saldo, por ejemplo $5 USD) → <b>API Keys</b> → <b>Create Key</b> → cópiala y pégala aquí. Se guarda solo en el archivo <span class="kbd">.env</span> de tu PC; el navegador y el celular nunca la reciben.</div>`;
 }
 
@@ -2829,7 +2903,7 @@ function updatesSection() {
 const cmpVer = (a, b) => { const x = String(a || '0').split('.').map(Number), y = String(b || '0').split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); } return 0; };
 
 async function saveKey(which) {
-  const body = which === 'anthropic' ? { anthropicKey: $('#key-anthropic').value } : which === 'odds' ? { oddsApiKey: $('#key-odds').value } : { updateUrl: $('#update-url').value };
+  const body = which === 'anthropic' ? { anthropicKey: $('#key-anthropic').value } : which === 'odds' ? { oddsApiKey: $('#key-odds').value } : which === 'nba' ? { nbaKey: $('#key-nba').value } : { updateUrl: $('#update-url').value };
   const val = Object.values(body)[0];
   if (!val || !val.trim()) { toast('Escribe un valor primero'); return; }
   try {
@@ -3027,6 +3101,7 @@ document.addEventListener('change', (e) => {
     render(); if (t.checked) refreshAll();
   }
   if (t.id === 'sw-ai') { B.updateSettings({ aiConfirm: t.checked }); render(); }
+  if (t.id === 'sw-highhit') { B.updateSettings({ highHit: t.checked }); toast(t.checked ? '🎯 Solo apuestas con 60% o más de probabilidad' : 'Prioridad de acierto desactivada'); render(); return; }
   if (t.id === 'sw-practice') {
     B.updateSettings(t.checked ? { practiceMode: true, autopilotDevice: B.getState().settings.autopilotDevice || B.deviceId } : { practiceMode: false });
     B.log(t.checked ? 'Modo práctica diaria activado' : 'Modo práctica diaria en pausa');

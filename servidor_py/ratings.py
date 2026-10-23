@@ -145,6 +145,50 @@ class Juegos:
                                      "visita": t["away"]["team"]["name"], "pl": hs, "pv": as_})
         return self.upsert(rows, "mlb-statsapi")
 
+    def update_nba(self, key: str) -> int:
+        """NBA desde balldontlie (plan gratis: 5 consultas por minuto; se respeta con una pausa de 13 s)."""
+        rows, year = [], dt.date.today().year
+        current = season_of("nba", dt.date.today())
+        # Temporadas pasadas: solo la primera vez (ya no cambian). La actual: cada día.
+        seasons = [y for y in range(current - 3, current + 1) if y == current or self.meta(f"nba_{y}") != "ok"]
+        with httpx.Client(headers={**UA, "Authorization": key}, timeout=60) as c:
+            for season in seasons:
+                cursor = None
+                while True:
+                    params = {"seasons[]": season, "per_page": 100}
+                    if cursor:
+                        params["cursor"] = cursor
+                    r = c.get("https://api.balldontlie.io/v1/games", params=params)
+                    if r.status_code == 429:
+                        time.sleep(30)
+                        continue
+                    if r.status_code != 200:
+                        raise RuntimeError(f"balldontlie HTTP {r.status_code}")
+                    d = r.json()
+                    for g in d.get("data", []):
+                        if str(g.get("status", "")).lower() != "final" and g.get("status_state") != "final":
+                            continue
+                        hs, vs = g.get("home_team_score"), g.get("visitor_team_score")
+                        if not hs and not vs:
+                            continue
+                        rows.append({"liga": "nba", "fecha": str(g.get("date", ""))[:10], "local": g["home_team"]["full_name"],
+                                     "visita": g["visitor_team"]["full_name"], "pl": hs, "pv": vs})
+                    cursor = (d.get("meta") or {}).get("next_cursor")
+                    time.sleep(13)
+                    if not cursor:
+                        break
+                if season != current:
+                    self.upsert(rows, "balldontlie")
+                    rows = []
+                    self.meta(f"nba_{season}", "ok")
+        return self.upsert(rows, "balldontlie")
+
+    def meta(self, k, v=None):
+        if v is None:
+            r = self.db.execute("SELECT v FROM meta WHERE k = ?", (k,)).fetchone()
+            return r[0] if r else None
+        self.db.execute("INSERT OR REPLACE INTO meta (k, v) VALUES (?, ?)", (k, v))
+
     def add_bot(self, items) -> int:
         rows = []
         for it in items:
@@ -226,6 +270,8 @@ def best_blend_2way(preds):
 class Ratings:
     def __init__(self, data_dir: Path, hist):
         self.juegos = Juegos(hist.db, hist.lock)
+        self.hist = hist
+        self.env_path = data_dir.parent / ".env"
         self.file = data_dir / "modelos" / "ratings.json"
         self.file.parent.mkdir(parents=True, exist_ok=True)
         self.models: dict = {}
@@ -239,12 +285,28 @@ class Ratings:
             except ValueError as e:
                 self.error = f"No se pudo leer ratings.json: {e}"
 
+    def nba_key(self):
+        """Clave de balldontlie desde el .env de la carpeta del bot (nunca sale de tu PC salvo hacia balldontlie)."""
+        try:
+            for line in self.env_path.read_text(encoding="utf-8-sig").splitlines():
+                if line.strip().startswith("BALLDONTLIE_API_KEY="):
+                    return line.split("=", 1)[1].strip().strip("\"' ") or None
+        except OSError:
+            pass
+        return None
+
     def age_hours(self):
         t = self.info.get("_trained")
         return (time.time() - t) / 3600 if t else None
 
     def update_sources(self) -> dict:
         out = {}
+        key = self.nba_key()
+        if key:
+            try:
+                out["nba"] = self.juegos.update_nba(key)
+            except Exception as e:
+                out["nba"] = f"error: {e}"
         for name, fn in (("nfl", self.juegos.update_nfl), ("mlb", lambda: self.juegos.update_mlb("mlb")), ("lmb", lambda: self.juegos.update_mlb("lmb"))):
             try:
                 out[name] = fn()
