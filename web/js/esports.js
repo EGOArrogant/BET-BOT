@@ -238,8 +238,10 @@ export async function finishedEsports(game, sinceIso) {
   const d = BO3_DISC[game];
   if (!d) return [];
   const since = new Date(Math.floor((new Date(sinceIso).getTime() - 12 * 3600_000) / 3600_000) * 3600_000).toISOString();
+  // Ventana acotada (±1.5 días): bo3.gg devuelve máx. 100 partidos, y sin tope los más viejos se quedaban fuera.
+  const until = new Date(new Date(since).getTime() + 36 * 3600_000).toISOString();
   return cached('bo3fin:' + game + since, 60_000, async () => {
-    const url = `${BO3}?filter[matches.discipline_id][eq]=${d}&filter[matches.status][in]=finished&filter[matches.start_date][gte]=${since}&page[limit]=100&with=teams&sort=-start_date`;
+    const url = `${BO3}?filter[matches.discipline_id][eq]=${d}&filter[matches.status][in]=finished&filter[matches.start_date][gte]=${since}&filter[matches.start_date][lte]=${until}&page[limit]=100&with=teams&sort=-start_date`;
     const res = await fetch('/api/proxy?url=' + encodeURIComponent(url));
     if (!res.ok) throw new Error('bo3.gg HTTP ' + res.status);
     const rows = JSON.parse(await res.text()).results || [];
