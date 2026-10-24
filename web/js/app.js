@@ -261,6 +261,7 @@ async function refreshAll() {
   const events = allEvents();
   B.settleWithEvents(events);
   B.settleShadow(events);
+  B.auditSettled(events); // si la fuente corrige un resultado, la apuesta se corrige sola
   B.learnFromEvents(events);
   postFinishedSoccer();
   refreshWeather().catch(() => {});
@@ -300,7 +301,7 @@ async function settleOld() {
       // CS2/Valorant: Liquipedia quita los partidos terminados; el resultado se toma de bo3.gg.
       const lg = D.leagueById(b.leagueId);
       if (lg?.sport === 'esports' && lg.game !== 'lol') evs = [...evs, ...await finishedEsports(lg.game, b.eventDate).catch(() => [])];
-      B.settleWithEvents(evs); B.settleShadow(evs);
+      B.settleWithEvents(evs); B.settleShadow(evs); B.auditSettled(evs);
     } catch (e) { console.warn('liquidación', e); }
   }
   // Sin resultado oficial 3 días después: se anula y se devuelve el monto (no se queda "en juego" para siempre).
@@ -3233,7 +3234,7 @@ async function liveTick() {
   try {
     await Promise.allSettled(leagues.map((lg) => refreshLeague(lg)));
     const events = allEvents();
-    B.settleWithEvents(events); B.settleShadow(events); B.cleanSlip(events);
+    B.settleWithEvents(events); B.settleShadow(events); B.auditSettled(events); B.cleanSlip(events);
     liveX365().catch(() => {}); // xG en vivo de los partidos de fútbol en juego
     detectChanges();
     S.lastUpdate = Date.now();

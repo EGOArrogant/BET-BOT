@@ -457,6 +457,35 @@ export function settleShadow(events) {
   return changed;
 }
 
+// ---------- auditoría de resultados ----------
+// Vuelve a calcular el resultado con los datos actuales de la fuente (por si la fuente lo corrigió después,
+// cambió el orden de los equipos o se liquidó con un marcador provisional).
+export function recheck(b, events) {
+  const found = findEvent(b, events);
+  if (!found || !found.ev.completed) return null;
+  const ev = found.swap ? swapEv(found.ev) : found.ev;
+  const r = resultOf(b, ev);
+  return r ? { r, score: `${ev.home.score ?? '-'}-${ev.away.score ?? '-'}`, ev } : null;
+}
+// Revisa las apuestas y sombras ya liquidadas cuyo partido sigue en los datos cargados, y corrige las que no
+// coinciden con el resultado oficial. No toca anuladas a mano, duplicadas ni cobros anticipados.
+export function auditSettled(events) {
+  const fixed = [];
+  for (const b of state.bets) {
+    if (!['won', 'lost', 'void'].includes(b.status) || !['auto', 'corregida', 'sin-resultado'].includes(b.settledBy)) continue;
+    const c = recheck(b, events);
+    if (c && c.r !== b.status && fixResult(b.id, c.r, c.score)) fixed.push(b);
+  }
+  let sh = 0;
+  for (const s of state.shadow) {
+    if (!['won', 'lost', 'void'].includes(s.status)) continue;
+    const c = recheck(s, events);
+    if (c && c.r !== s.status) { s.status = c.r; s.profit = c.r === 'won' ? s.odds - 1 : c.r === 'lost' ? -1 : 0; s.corrected = true; sh++; }
+  }
+  if (sh) save();
+  return { fixed, shadows: sh };
+}
+
 export function segmentStats() {
   const out = {};
   for (const s of state.shadow) {
