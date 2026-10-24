@@ -44,7 +44,7 @@ from aprendizaje import Aprendizaje  # noqa: E402
 import clima as climamod  # noqa: E402
 from precios import Precios  # noqa: E402
 
-SERVER_VERSION = "3.7.0"
+SERVER_VERSION = "3.7.1"
 ENGINE = "python"
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -869,7 +869,7 @@ async def modelos_entrenar(req: Request):
 
 # Casas de The Odds API → casas de la app. Solo las que el bot conoce.
 APP_BOOK = {"caliente": "caliente", "codere": "codere", "bet365": "bet365", "betano": "betano", "betway": "betway", "playdoit": "playdoit",
-            "strendus": "strendus", "pinnacle": "pinnacle", "bwin": "bwin", "betfair_ex_eu": "betfair", "betfair_ex_uk": "betfair"}
+            "strendus": "strendus", "pinnacle": "pinnacle", "bwin": "bwin", "betfair_ex_eu": "betfair", "betfair_ex_uk": "betfair", "onexbet": "onexbet"}
 
 
 @app.get("/api/precios/casas")

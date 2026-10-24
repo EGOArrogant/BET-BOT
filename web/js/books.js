@@ -20,8 +20,10 @@ export const BOOKS = [
   { id: 'strendus', name: 'Strendus', url: 'https://www.strendus.com.mx', color: '#7b2cbf', group: 'mx', cashout: 'verificar' },
   { id: 'novibet', name: 'Novibet', url: 'https://www.novibet.mx', color: '#0b3d91', group: 'mx', cashout: 'verificar' },
   { id: 'betway', name: 'Betway', url: 'https://betway.mx', color: '#111111', group: 'mx', cashout: 'verificar' },
+  { id: 'teammexico', name: 'Team México', url: 'https://www.teammexico.mx', color: '#006847', group: 'mx', cashout: 'verificar', note: 'Sportsbook y casino mexicano con permiso SEGOB.' },
   { id: 'pinnacle', name: 'Pinnacle', url: 'https://www.pinnacle.com', color: '#c8102e', group: 'intl', note: 'Margen más bajo del mercado; su momio es la referencia "justa".' },
   { id: 'stake', name: 'Stake', url: 'https://stake.mx', color: '#1a2c38', group: 'intl', note: 'Anunció su entrada a México; confirma si ya tiene permiso.' },
+  { id: 'onexbet', name: '1xBet', url: 'https://1xbet.com.mx', color: '#1a5b9c', group: 'intl', cashout: true, note: 'Opera en México (1xbet.com.mx), pero su permiso SEGOB no está confirmado: verifícalo antes de depositar.' },
   { id: 'bwin', name: 'bwin', url: 'https://www.bwin.com', color: '#ffcc00', group: 'intl' },
   { id: 'betfair', name: 'Betfair (exchange)', url: 'https://www.betfair.com', color: '#ffb80c', group: 'intl', note: 'Bolsa de apuestas: apuestas contra otros usuarios.' },
 ];
@@ -68,7 +70,7 @@ export function bookAvailable(state, id) {
 // partida; con tus capturas el bot aprende el de cada casa y deporte, y si The Odds API trae la casa, usa el real.
 const PRIOR_MARGIN = {
   caliente: 0.075, codere: 0.07, bet365: 0.055, betano: 0.06, draftea: 0.08, playdoit: 0.08, rushbet: 0.07,
-  strendus: 0.075, novibet: 0.06, betway: 0.06, pinnacle: 0.025, stake: 0.05, bwin: 0.065, betfair: 0.03,
+  strendus: 0.075, novibet: 0.06, betway: 0.06, teammexico: 0.08, onexbet: 0.05, pinnacle: 0.025, stake: 0.05, bwin: 0.065, betfair: 0.03,
 };
 const SRC_RANK = { capturado: 4, real: 3, aprendido: 2, estimado: 1 };
 export const SRC_LABEL = { capturado: 'lo capturaste tú', real: 'momio real (The Odds API)', aprendido: 'estimado con tus capturas', estimado: 'estimado con el margen típico de la casa' };
