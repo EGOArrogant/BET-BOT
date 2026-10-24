@@ -172,7 +172,9 @@ class Store:
                 if not isinstance(it, dict) or not it.get("id"):
                     continue
                 line = json.dumps(it, ensure_ascii=False, separators=(",", ":"))
-                cur = self.db.execute("INSERT OR IGNORE INTO apuestas (id, t, json) VALUES (?, ?, ?)", (str(it["id"]), it.get("t"), line))
+                # Un resultado corregido reemplaza al anterior (en el .jsonl queda la línea nueva; la última manda).
+                verb = "INSERT OR REPLACE" if it.get("corrected") else "INSERT OR IGNORE"
+                cur = self.db.execute(f"{verb} INTO apuestas (id, t, json) VALUES (?, ?, ?)", (str(it["id"]), it.get("t"), line))
                 if cur.rowcount:
                     added += 1
                     with self.ledger_path.open("a", encoding="utf-8") as f:

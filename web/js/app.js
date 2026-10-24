@@ -318,7 +318,7 @@ B.onSettled((b, ev) => {
     market: b.market, pick: b.pick, line: b.line, label: b.label,
     odds: b.odds, oddsMx: b.oddsMx, refOdds: b.refOdds, closingOdds: b.closingOdds, book: b.book,
     p: b.p, pModel: b.pModel, pMarket: b.pMarket, ev: b.ev, stake: b.stake, payout: b.payout,
-    status: b.status, finalScore: b.finalScore || null, settledBy: b.settledBy || 'auto',
+    status: b.status, finalScore: b.finalScore || null, settledBy: b.settledBy || 'auto', corrected: b.settledBy === 'corregida',
     sharpSide: smart?.best || null, lineValue: !!b.lineValue, lineBook: b.lineValue?.book || null, fairOdds: b.lineValue?.fairOdds || null, profit: b.status === 'void' ? 0 : Math.round(((b.payout || 0) - b.stake) * 100) / 100,
   });
   pushFeed({ kind: b.status, k: ev ? ev.leagueId + ':' + ev.id : null, text: `${b.status === 'won' ? '✅ Ganaste' : b.status === 'lost' ? '❌ Perdiste' : '↩️ Anulada'}: ${b.label} · ${b.eventName} (${B.matchWhen(b.eventDate)})${b.finalScore ? ' · ' + b.finalScore : ''}${b.status === 'won' ? ` · +${money(b.payout - b.stake)}` : b.status === 'lost' ? ` · −${money(b.stake)}` : ''}` });

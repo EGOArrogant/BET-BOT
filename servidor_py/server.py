@@ -44,7 +44,7 @@ from aprendizaje import Aprendizaje  # noqa: E402
 import clima as climamod  # noqa: E402
 from precios import Precios  # noqa: E402
 
-SERVER_VERSION = "3.7.1"
+SERVER_VERSION = "3.7.2"
 ENGINE = "python"
 
 ROOT = Path(__file__).resolve().parent.parent

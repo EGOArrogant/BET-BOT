@@ -236,6 +236,26 @@ export function placeBet({ ev, sel, stake, odds, oddsMx = null, source = 'manual
   return bet;
 }
 
+// Corrige el resultado de una apuesta ya liquidada (p. ej. si la fuente dio los equipos al revés):
+// ajusta la banca y el saldo de la casa con la diferencia y avisa a la base de datos de apuestas.
+export function fixResult(id, r, finalScore = null) {
+  const b = state.bets.find((x) => x.id === id);
+  if (!b || !['won', 'lost', 'void'].includes(b.status) || !['won', 'lost', 'void'].includes(r) || b.status === r) return false;
+  const old = b.status, oldPay = old === 'lost' ? 0 : b.payout || 0;
+  const pay = r === 'won' ? round2(b.stake * b.odds) : r === 'void' ? b.stake : 0;
+  state.bankroll = round2(state.bankroll - oldPay + pay);
+  const bk = b.book && state.books[b.book];
+  if (bk && bk.balance != null && bk.balance !== '') bk.balance = round2(Number(bk.balance) - oldPay + pay);
+  b.status = r; b.payout = pay; b.settledBy = 'corregida'; b.correctedAt = Date.now();
+  if (finalScore) b.finalScore = finalScore;
+  const txt = { won: 'ganada', lost: 'perdida', void: 'anulada' };
+  log(`✏️ Resultado corregido: ${b.label} (${b.eventName}) de ${txt[old]} a ${txt[r]}${r === 'won' ? ` · cobra $${pay}` : ''}`, r);
+  settleListeners.forEach((fn) => { try { fn(b, null); } catch {} });
+  state.history.push({ t: Date.now(), bankroll: equityNow() });
+  save();
+  return true;
+}
+
 export function cancelBet(id) {
   const b = state.bets.find((x) => x.id === id);
   if (!b || b.status !== 'pending') return;
@@ -316,11 +336,13 @@ const normName = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/
   .replace(/\b(team|esports?|gaming|club|fc|cf|sc|ac)\b/g, '').replace(/[^a-z0-9]/g, '');
 const sameName = (a, b) => { const x = normName(a), y = normName(b); return !!x && !!y && (x === y || (Math.min(x.length, y.length) >= 4 && (x.includes(y) || y.includes(x)))); };
 export function findEvent(b, events, byId) {
-  const ev = byId ? byId.get(b.eventId) : events.find((e) => e.id === b.eventId);
-  if (ev) return { ev, swap: false };
-  const t = new Date(b.eventDate).getTime();
   const home = b.home ?? String(b.name || b.eventName || '').split(' vs ')[0];
   const away = b.away ?? String(b.name || b.eventName || '').split(' vs ')[1];
+  const ev = byId ? byId.get(b.eventId) : events.find((e) => e.id === b.eventId);
+  // Mismo partido, pero la fuente puede cambiar el orden de los equipos entre una consulta y otra (LoL Esports
+  // lo hace): se compara por nombre para no liquidar al revés.
+  if (ev) return { ev, swap: !!(home && away && !sameName(ev.home.name, home) && sameName(ev.home.name, away) && sameName(ev.away.name, home)) };
+  const t = new Date(b.eventDate).getTime();
   for (const e of events) {
     if (e.sport !== b.sport || Math.abs(new Date(e.date).getTime() - t) > 12 * 3600_000) continue;
     if (sameName(e.home.name, home) && sameName(e.away.name, away)) return { ev: e, swap: false };

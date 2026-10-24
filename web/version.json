@@ -1,8 +1,9 @@
 {
-  "version": "2.11.2",
+  "version": "2.11.3",
   "date": "2026-10-23",
   "zip": "https://github.com/EGOArrogant/BET-BOT/archive/refs/heads/main.zip",
   "notes": [
+    "Corregido: apuestas de LoL liquidadas al revés cuando LoL Esports cambiaba el orden de los equipos (Lyon vs Team Secret Whales); ahora se comparan por nombre",
     "Nuevas casas: Team México (con permiso SEGOB) y 1xBet (momio real vía The Odds API cuando esté disponible); Novibet y Playdoit ya estaban",
     "Fecha y hora del partido en cada apuesta: en la tarjeta (\"Partido: …\"), en \"Por colocar en tu casa\", en la bitácora y en los avisos al celular",
     "Apuestas abiertas en tiempo real: en cuanto termina el partido se marcan ganadas o perdidas (revisión cada 30 s de las ligas con apuestas en juego y cada 2 min de partidos que ya no salen en la lista), y el celular se entera en segundos con aviso",
