@@ -238,13 +238,19 @@ export async function finishedEsports(game, sinceIso) {
   const d = BO3_DISC[game];
   if (!d) return [];
   const since = new Date(Math.floor((new Date(sinceIso).getTime() - 12 * 3600_000) / 3600_000) * 3600_000).toISOString();
-  // Ventana acotada (±1.5 días): bo3.gg devuelve máx. 100 partidos, y sin tope los más viejos se quedaban fuera.
-  const until = new Date(new Date(since).getTime() + 36 * 3600_000).toISOString();
+  // bo3.gg da 100 partidos por página (los más nuevos primero) y no filtra por fecha: se pagina hacia atrás
+  // hasta pasar la fecha buscada (antes solo se veían los 100 más recientes y los viejos no se liquidaban).
+  const from = new Date(since).getTime();
   return cached('bo3fin:' + game + since, 60_000, async () => {
-    const url = `${BO3}?filter[matches.discipline_id][eq]=${d}&filter[matches.status][in]=finished&filter[matches.start_date][gte]=${since}&filter[matches.start_date][lte]=${until}&page[limit]=100&with=teams&sort=-start_date`;
-    const res = await fetch('/api/proxy?url=' + encodeURIComponent(url));
-    if (!res.ok) throw new Error('bo3.gg HTTP ' + res.status);
-    const rows = JSON.parse(await res.text()).results || [];
+    const rows = [];
+    for (let off = 0; off < 1200; off += 100) {
+      const url = `${BO3}?filter[matches.discipline_id][eq]=${d}&filter[matches.status][in]=finished&page[limit]=100&page[offset]=${off}&with=teams&sort=-start_date`;
+      const res = await fetch('/api/proxy?url=' + encodeURIComponent(url));
+      if (!res.ok) throw new Error('bo3.gg HTTP ' + res.status);
+      const page = JSON.parse(await res.text()).results || [];
+      rows.push(...page.filter((m) => new Date(m.start_date).getTime() >= from));
+      if (page.length < 100 || new Date(page.at(-1).start_date).getTime() < from) break;
+    }
     return rows.filter((m) => m.team1 && m.team2).map((m) => {
       const side = (t, sc, id) => ({ id: teamId(game, t.name), name: t.name, abbr: t.name, logo: t.image_url || '', score: sc ?? 0, winner: m.winner_team_id === id, record: '', form: '', linescores: [] });
       return {
